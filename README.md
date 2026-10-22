@@ -19,55 +19,118 @@ ls -l /dev/i2c-1
 
 ## Runtime
 
-- `ir-camera-app`: Gunicorn and Flask on host port 3000
+- `ir-camera-app`: prebuilt `ir-camera:arm64` image on host port 3000
 - `ir-camera-nginx`: separately managed Nginx container on host port 80
 - MLX90640 access: `/dev/i2c-1` passed to `ir-camera-app`
+- Public URL: `http://<raspberry-pi-address>/IR-Camera/`
 
-Camera source and Docker build files stay in `~/IR-Camera/`. The Nginx configuration stays outside this repository at `~/nginx/default.conf`.
+Camera files and downloaded image archives stay in `~/IR-Camera/`. The Nginx configuration remains outside this repository at `~/nginx/default.conf`.
 
-## First deployment
+The Raspberry Pi never builds the image and never installs Python, Debian, or Nginx packages. `compose.yaml` sets `pull_policy: never` and uses the fixed image tag `ir-camera:arm64`.
 
-Keep the local `IR-Camera/` and `nginx/` directories beside each other. Replace `user@server` with the Raspberry Pi SSH destination:
+## CI pipeline
 
-```sh
-ssh user@server 'mkdir -p ~/IR-Camera ~/nginx'
-scp -r ./IR-Camera/. user@server:~/IR-Camera/
-scp ./nginx/default.conf user@server:~/nginx/default.conf
-ssh user@server 'cd ~/IR-Camera && docker compose up -d --build --remove-orphans'
+`.github/workflows/build.yml` runs for pushes to `main`, version tags matching `v*`, and manual dispatches. It:
+
+1. Installs the test dependencies and runs `pytest`.
+2. Enables QEMU and Docker Buildx.
+3. Builds the Dockerfile for `linux/arm64`.
+4. Verifies the image reports Linux ARM64 and serves `/healthz`.
+5. Saves and gzip-compresses the complete image as `ir-camera-arm64.tar.gz`.
+6. Verifies Docker can load the compressed archive directly.
+7. Uploads the archive as the `ir-camera-arm64` Actions artifact for 30 days.
+8. Attaches the archive to a GitHub Release when a `v*` tag is pushed.
+
+The runner must have Docker access and outbound access to container registries, Debian package repositories, PyPI, and the official GitHub Actions used by the workflow. No proxy credentials or deployment credentials are stored in the repository. CI never connects to the Raspberry Pi.
+
+## Download and transfer from Windows PowerShell
+
+Install and authenticate GitHub CLI once, then download the newest successful `main` artifact:
+
+```powershell
+$Repo = "samuelfirmansyahatbshg/IR-Camera"
+$RunId = gh run list --repo $Repo --workflow build.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+$DownloadDir = Join-Path $HOME "Downloads\IR-Camera-$RunId"
+New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
+gh run download $RunId --repo $Repo --name ir-camera-arm64 --dir $DownloadDir
+Get-Item (Join-Path $DownloadDir "ir-camera-arm64.tar.gz")
 ```
 
-Start the separately managed Nginx container:
+The Actions web interface can also download the `ir-camera-arm64` artifact. Browser downloads wrap the artifact in a ZIP file; extract that ZIP to obtain `ir-camera-arm64.tar.gz`.
 
-```sh
-ssh user@server 'docker rm -f ir-camera-nginx 2>/dev/null || true; docker run -d --name ir-camera-nginx -p 80:80 --restart unless-stopped --add-host=host.docker.internal:host-gateway -v "$HOME/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" nginx:alpine'
+Copy the image and current Compose file to the Raspberry Pi:
+
+```powershell
+ssh user@server 'mkdir -p ~/IR-Camera'
+scp (Join-Path $DownloadDir "ir-camera-arm64.tar.gz") user@server:~/IR-Camera/ir-camera-arm64.tar.gz
+scp .\IR-Camera\compose.yaml user@server:~/IR-Camera/compose.yaml
 ```
 
-Open `http://<raspberry-pi-address>/IR-Camera/`.
+The separately managed Nginx configuration can still be transferred independently from the sibling local directory:
 
-## Deploy an updated Python application
-
-```sh
-scp ./IR-Camera/ir_camera.py user@server:~/IR-Camera/ir_camera.py
-ssh user@server 'cd ~/IR-Camera && docker compose up -d --build'
-```
-
-Deploy the entire camera project when `Dockerfile`, `requirements.txt`, or `compose.yaml` changes:
-
-```sh
-scp -r ./IR-Camera/. user@server:~/IR-Camera/
-ssh user@server 'cd ~/IR-Camera && docker compose up -d --build --remove-orphans'
-```
-
-Deploy an updated external Nginx configuration independently:
-
-```sh
-scp ./nginx/default.conf user@server:~/nginx/default.conf
+```powershell
+ssh user@server 'mkdir -p ~/nginx'
+scp .\nginx\default.conf user@server:~/nginx/default.conf
 ssh user@server 'docker restart ir-camera-nginx'
+```
+
+Restarting the existing Nginx container reads the updated bind-mounted configuration. These commands do not install Nginx or pull an Nginx image.
+
+## Deploy on the Raspberry Pi
+
+Before replacing a working image, save a local rollback archive:
+
+```bash
+mkdir -p ~/IR-Camera/rollback
+docker image save ir-camera:arm64 | gzip > ~/IR-Camera/rollback/ir-camera-arm64-before-update.tar.gz
+```
+
+Load the CI image and recreate the camera container without building or pulling:
+
+```bash
+docker load -i ~/IR-Camera/ir-camera-arm64.tar.gz
+cd ~/IR-Camera
+docker compose up -d --no-build --pull never
+```
+
+The CI workflow verifies direct loading of the gzip-compressed Docker archive. If an older Docker Engine rejects compressed input, stream decompression without installing anything:
+
+```bash
+gzip -dc ~/IR-Camera/ir-camera-arm64.tar.gz | docker load
+```
+
+Verify both the application and external Nginx route:
+
+```bash
+curl --fail http://localhost:3000/healthz
+curl --fail http://localhost/IR-Camera/healthz
+```
+
+The camera opens when the first browser requests `/IR-Camera/video_feed`. Container logs report I2C or sensor initialization failures.
+
+## Roll back
+
+Keep previous successful CI artifacts under `~/IR-Camera/rollback/`, with the run ID or version in each filename. Loading an older artifact restores its included `ir-camera:arm64` tag:
+
+```bash
+docker load -i ~/IR-Camera/rollback/ir-camera-arm64-<run-id>.tar.gz
+cd ~/IR-Camera
+docker compose up -d --no-build --pull never --force-recreate
+curl --fail http://localhost:3000/healthz
+curl --fail http://localhost/IR-Camera/healthz
+```
+
+To restore the archive saved immediately before an update:
+
+```bash
+docker load -i ~/IR-Camera/rollback/ir-camera-arm64-before-update.tar.gz
+cd ~/IR-Camera
+docker compose up -d --no-build --pull never --force-recreate
 ```
 
 ## Operations
 
-```sh
+```bash
 cd ~/IR-Camera
 docker compose ps
 docker compose logs -f app
@@ -75,18 +138,9 @@ docker compose restart
 docker compose down
 ```
 
-Check the application directly or through Nginx:
-
-```sh
-curl --fail http://localhost:3000/healthz
-curl --fail http://localhost/IR-Camera/healthz
-```
-
-The camera is opened when the first browser requests `/IR-Camera/video_feed`. Container logs report I2C or sensor initialization failures.
-
 ## Local tests
 
-```sh
+```bash
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-dev.txt

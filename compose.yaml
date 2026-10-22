@@ -1,7 +1,8 @@
 services:
   app:
-    build:
-      context: .
+    image: ir-camera:arm64
+    pull_policy: never
+    platform: linux/arm64
     container_name: ir-camera-app
     restart: unless-stopped
     ports:
