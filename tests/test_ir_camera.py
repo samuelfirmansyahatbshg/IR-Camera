@@ -99,6 +99,28 @@ def test_rendered_frame_has_browser_display_dimensions():
     assert image.shape == (FRAME_HEIGHT * 20, FRAME_WIDTH * 20, 3)
     assert image.dtype == np.uint8
 
+def test_rendered_annotations_stay_small_and_preserve_the_hot_pixel():
+    temperatures = np.full((FRAME_HEIGHT, FRAME_WIDTH), 20.0, dtype=np.float32)
+    hot_y, hot_x = 12, 16
+    temperatures[hot_y, hot_x] = 45.0
+
+    image = render_thermal_frame(temperatures)
+
+    white = np.all(image >= 250, axis=2)
+    center_y = hot_y * 20 + 10
+    center_x = hot_x * 20 + 10
+
+    assert not white[60:180, :300].any()
+    assert not white[center_y, center_x]
+    assert white[
+        center_y - 12 : center_y + 13,
+        center_x - 12 : center_x + 13,
+    ].any()
+    assert not white[
+        center_y - 5 : center_y + 6,
+        center_x + 25 : center_x + 40,
+    ].any()
+
 
 def test_liveness_does_not_access_camera_hardware():
     app = create_app(camera=FixedCamera())

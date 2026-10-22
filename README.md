@@ -34,11 +34,14 @@ The web process uses one shared MLX90640 capture thread for all browser connecti
 
 The sensor starts at 2 Hz while frame reliability is being diagnosed. Each capture cycle makes at most three `getFrame` attempts, waits 100 ms between transient failures, and accepts `RuntimeError`, `ValueError`, and `OSError` as recoverable frame failures. After an exhausted cycle, the capture loop waits 500 ms before trying a new bounded cycle. Persistent failures therefore remain visible in logs without terminating the MJPEG response or creating a busy retry loop.
 
+The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the temperature label and hot-point ring are drawn. Annotations therefore remain readable and do not obscure the thermal image.
+
 The confirmed repository defects were:
 
 - `RuntimeError: Too many retries` escaped the camera adapter because it caught only `ValueError`, terminating that viewer's MJPEG generator.
 - Every viewer previously ran its own read loop. The existing lock prevented simultaneous calls, but multiple viewers still multiplied sequential sensor reads.
 - The initial 8 Hz refresh setting gave the bus and sensor less recovery margin.
+- The temperature label and hot-point marker were drawn onto the native 32 x 24 frame and then enlarged 20 times, producing the giant white `Ho` shapes and star seen in the stream.
 
 The underlying reason the MLX90640 library reports `Too many retries` is not established without hardware evidence. An ACK at address `0x33` confirms that a device responds, not that full frame transfers succeed. Remaining possibilities include I2C signal integrity, power stability, clock behavior, bus frequency compatibility, or the sensor itself.
 

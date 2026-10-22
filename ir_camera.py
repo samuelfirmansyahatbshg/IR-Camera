@@ -135,24 +135,44 @@ def render_thermal_frame(temperatures: np.ndarray) -> np.ndarray:
         MAX_TEMPERATURE_C - MIN_TEMPERATURE_C
     )
     grayscale = (normalized * 255).astype(np.uint8)
-    color_image = cv2.applyColorMap(grayscale, cv2.COLORMAP_INFERNO)
-
-    cv2.putText(
-        color_image,
-        f"Hot: {hot_temperature:.1f} C",
-        (5, 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (255, 255, 255),
-        1,
-    )
-    cv2.circle(color_image, (int(hot_x), int(hot_y)), 3, (255, 255, 255), -1)
-
-    return cv2.resize(
-        color_image,
+    display_grayscale = cv2.resize(
+        grayscale,
         (FRAME_WIDTH * DISPLAY_SCALE, FRAME_HEIGHT * DISPLAY_SCALE),
         interpolation=cv2.INTER_CUBIC,
     )
+    color_image = cv2.applyColorMap(display_grayscale, cv2.COLORMAP_INFERNO)
+
+    label = f"Hot: {hot_temperature:.1f} C"
+    label_origin = (12, 32)
+    cv2.putText(
+        color_image,
+        label,
+        label_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 0, 0),
+        4,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        color_image,
+        label,
+        label_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    hot_center = (
+        int((hot_x + 0.5) * DISPLAY_SCALE),
+        int((hot_y + 0.5) * DISPLAY_SCALE),
+    )
+    cv2.circle(color_image, hot_center, 10, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.circle(color_image, hot_center, 10, (255, 255, 255), 2, cv2.LINE_AA)
+
+    return color_image
 
 
 class FrameBroadcaster:
