@@ -36,6 +36,8 @@ The sensor starts at 2 Hz while frame reliability is being diagnosed. Each captu
 
 The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the temperature label and hot-point ring are drawn. Annotations therefore remain readable and do not obscure the thermal image.
 
+The browser polls `/camera_status` every two seconds. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
+
 The confirmed repository defects were:
 
 - `RuntimeError: Too many retries` escaped the camera adapter because it caught only `ValueError`, terminating that viewer's MJPEG generator.

@@ -47,11 +47,17 @@ class Mlx90640Camera:
 
         self._read_lock = threading.Lock()
         self._sensor = sensor
+        self._last_error: str | None = None
         self._frame = [0.0] * (FRAME_WIDTH * FRAME_HEIGHT)
         self._read_attempts = read_attempts
         self._retry_delay = retry_delay
         self._sleep = sleep
         self._logger = logger if logger is not None else LOGGER
+
+    @property
+    def last_error(self) -> str | None:
+        with self._read_lock:
+            return self._last_error
 
     def _initialize(self) -> None:
         import adafruit_mlx90640
@@ -74,6 +80,9 @@ class Mlx90640Camera:
                 try:
                     self._initialize()
                 except FRAME_READ_ERRORS as error:
+                    self._last_error = (
+                        f"{type(error).__name__}: {error}"
+                    )
                     self._logger.error(
                         "MLX90640 initialization failed: %s",
                         error,
@@ -86,6 +95,9 @@ class Mlx90640Camera:
                     self._sensor.getFrame(self._frame)
                 except FRAME_READ_ERRORS as error:
                     if attempt == self._read_attempts:
+                        self._last_error = (
+                            f"{type(error).__name__}: {error}"
+                        )
                         self._logger.error(
                             "MLX90640 frame read failed on attempt %d/%d; "
                             "stream remains active: %s",
@@ -106,6 +118,7 @@ class Mlx90640Camera:
                     self._sleep(self._retry_delay)
                     continue
 
+                self._last_error = None
                 temperatures = np.asarray(
                     self._frame,
                     dtype=np.float32,
@@ -199,6 +212,37 @@ class FrameBroadcaster:
     def subscriber_count(self) -> int:
         with self._condition:
             return self._subscriber_count
+
+    def camera_status(self) -> dict[str, str]:
+        error = getattr(self._camera, "last_error", None)
+        with self._condition:
+            has_frame = self._latest_frame is not None
+            capture_running = self._capture_thread is not None
+
+        if error:
+            return {
+                "state": "offline",
+                "message": "CAMERA OFFLINE",
+                "detail": (
+                    "MLX90640 at I2C address 0x33 is not responding. "
+                    f"{error}"
+                ),
+            }
+        if has_frame:
+            return {
+                "state": "online",
+                "message": "CAMERA ONLINE",
+                "detail": "Live thermal frames are available.",
+            }
+        return {
+            "state": "connecting",
+            "message": "CONNECTING TO CAMERA",
+            "detail": (
+                "Waiting for the first MLX90640 frame."
+                if capture_running
+                else "The thermal stream has not started yet."
+            ),
+        }
 
     def frames(self) -> Iterator[bytes]:
         with self._condition:
@@ -311,18 +355,140 @@ def create_app(camera: Camera | None = None) -> Flask:
 
     @app.get("/")
     def index():
-        return f"""
+        return """
         <!doctype html>
         <html lang="en">
           <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <title>IR Camera</title>
+            <style>
+              :root {
+                color-scheme: dark;
+                font-family: system-ui, sans-serif;
+              }
+              body {
+                margin: 0;
+                background: #111827;
+                color: #f9fafb;
+              }
+              main {
+                width: min(94vw, 760px);
+                margin: 32px auto;
+              }
+              h1 {
+                margin: 0 0 16px;
+              }
+              .status {
+                border: 3px solid;
+                border-radius: 8px;
+                margin-bottom: 16px;
+                padding: 16px 18px;
+                font-size: 1.15rem;
+                font-weight: 800;
+                letter-spacing: 0.03em;
+              }
+              .status.online {
+                border-color: #22c55e;
+                background: #052e16;
+                color: #bbf7d0;
+              }
+              .status.connecting {
+                border-color: #f59e0b;
+                background: #451a03;
+                color: #fde68a;
+              }
+              .status.offline {
+                border-color: #ef4444;
+                background: #450a0a;
+                color: #fecaca;
+              }
+              .camera {
+                position: relative;
+                overflow: hidden;
+                border: 2px solid #374151;
+                border-radius: 8px;
+                background: #030712;
+                aspect-ratio: 4 / 3;
+              }
+              .camera img {
+                display: block;
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+              }
+              .camera-offline {
+                position: absolute;
+                inset: 0;
+                display: grid;
+                place-content: center;
+                gap: 12px;
+                padding: 32px;
+                background: rgb(69 10 10 / 92%);
+                color: white;
+                text-align: center;
+              }
+              .camera-offline[hidden] {
+                display: none;
+              }
+              .camera-offline strong {
+                font-size: clamp(2rem, 8vw, 4rem);
+                line-height: 1;
+              }
+              .camera-offline span {
+                font-size: 1.1rem;
+              }
+            </style>
           </head>
           <body>
-            <h1>Live Thermal Camera Feed</h1>
-            <img src="video_feed" width="640" height="480"
-                 alt="Live MLX90640 thermal camera feed">
+            <main>
+              <h1>Live Thermal Camera Feed</h1>
+              <div id="camera-status" class="status connecting"
+                   role="alert" aria-live="assertive">
+                CONNECTING TO CAMERA
+              </div>
+              <div class="camera">
+                <img src="video_feed" width="640" height="480"
+                     alt="Live MLX90640 thermal camera feed">
+                <div id="camera-offline" class="camera-offline" hidden>
+                  <strong>CAMERA OFFLINE</strong>
+                  <span id="camera-error">
+                    MLX90640 at I2C address 0x33 is not responding.
+                  </span>
+                </div>
+              </div>
+            </main>
+            <script>
+              const banner = document.getElementById("camera-status");
+              const offline = document.getElementById("camera-offline");
+              const error = document.getElementById("camera-error");
+
+              async function refreshCameraStatus() {
+                try {
+                  const response = await fetch("camera_status", {
+                    cache: "no-store",
+                  });
+                  if (!response.ok) {
+                    throw new Error(`status request returned ${response.status}`);
+                  }
+                  const status = await response.json();
+                  banner.className = `status ${status.state}`;
+                  banner.textContent = `${status.message} - ${status.detail}`;
+                  offline.hidden = status.state !== "offline";
+                  error.textContent = status.detail;
+                } catch (requestError) {
+                  banner.className = "status offline";
+                  banner.textContent =
+                    `CAMERA STATUS UNAVAILABLE - ${requestError.message}`;
+                  offline.hidden = false;
+                  error.textContent =
+                    "The application cannot report the MLX90640 status.";
+                }
+              }
+
+              refreshCameraStatus();
+              window.setInterval(refreshCameraStatus, 2000);
+            </script>
           </body>
         </html>
         """
@@ -333,6 +499,10 @@ def create_app(camera: Camera | None = None) -> Flask:
             stream.frames(),
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
+
+    @app.get("/camera_status")
+    def camera_status():
+        return jsonify(stream.camera_status())
 
     @app.get("/healthz")
     def healthz():

@@ -75,6 +75,62 @@ def test_home_page_embeds_the_live_feed():
     assert response.status_code == 200
     assert b"Live Thermal Camera Feed" in response.data
     assert b'src="video_feed"' in response.data
+    assert b'role="alert"' in response.data
+    assert b"CAMERA OFFLINE" in response.data
+    assert b'fetch("camera_status"' in response.data
+
+def test_camera_status_reports_connecting_before_the_first_frame():
+    app = create_app(camera=FixedCamera())
+    app.config.update(TESTING=True)
+
+    response = app.test_client().get("/camera_status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "state": "connecting",
+        "message": "CONNECTING TO CAMERA",
+        "detail": "The thermal stream has not started yet.",
+    }
+
+
+def test_camera_status_reports_online_after_a_frame():
+    app = create_app(camera=FixedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    video_response = client.get("/video_feed", buffered=False)
+    next(video_response.response)
+    video_response.close()
+    response = client.get("/camera_status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "state": "online",
+        "message": "CAMERA ONLINE",
+        "detail": "Live thermal frames are available.",
+    }
+
+
+def test_camera_status_loudly_reports_the_latest_sensor_error():
+    camera = Mlx90640Camera(
+        sensor=ScriptedSensor([OSError("remote I/O error")]),
+        read_attempts=1,
+    )
+    assert camera.read_frame() is None
+    app = create_app(camera=camera)
+    app.config.update(TESTING=True)
+
+    response = app.test_client().get("/camera_status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "state": "offline",
+        "message": "CAMERA OFFLINE",
+        "detail": (
+            "MLX90640 at I2C address 0x33 is not responding. "
+            "OSError: remote I/O error"
+        ),
+    }
 
 
 def test_video_feed_emits_a_multipart_jpeg_frame():
