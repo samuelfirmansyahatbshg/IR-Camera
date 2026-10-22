@@ -140,10 +140,15 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             release_tag="$GITHUB_REF_NAME"
             if gh release view "$release_tag" >/dev/null 2>&1; then
-              gh release upload "$release_tag" "$IMAGE_ARCHIVE#ir-camera-arm64.tar.gz" --clobber
+              gh release upload "$release_tag" \
+                "$IMAGE_ARCHIVE#ir-camera-arm64.tar.gz" \
+                "compose.yaml#compose.yaml" \
+                --clobber
               gh release edit "$release_tag" --latest
             else
-              gh release create "$release_tag" "$IMAGE_ARCHIVE#ir-camera-arm64.tar.gz" \
+              gh release create "$release_tag" \
+                "$IMAGE_ARCHIVE#ir-camera-arm64.tar.gz" \
+                "compose.yaml#compose.yaml" \
                 --generate-notes \
                 --latest \
                 --title "IR Camera $release_tag"
@@ -151,7 +156,9 @@ jobs:
           else
             short_sha="${GITHUB_SHA::12}"
             release_tag="build-${GITHUB_RUN_NUMBER}-r${GITHUB_RUN_ATTEMPT}"
-            gh release create "$release_tag" "$IMAGE_ARCHIVE#ir-camera-arm64.tar.gz" \
+            gh release create "$release_tag" \
+              "$IMAGE_ARCHIVE#ir-camera-arm64.tar.gz" \
+              "compose.yaml#compose.yaml" \
               --latest \
               --notes "Automated Linux ARM64 image for commit $GITHUB_SHA." \
               --target "$GITHUB_SHA" \

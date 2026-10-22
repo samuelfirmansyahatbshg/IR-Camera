@@ -48,8 +48,8 @@ If failures continue, run these read-only diagnostics manually on the Raspberry 
 docker logs --tail 100 ir-camera-app
 docker inspect --format '{{json .HostConfig.Devices}}' ir-camera-app
 docker exec ir-camera-app ls -l /dev/i2c-1
-curl --fail http://localhost:3000/healthz
-curl --fail http://localhost/IR-Camera/healthz
+curl --noproxy "*" --fail http://localhost:3000/healthz
+curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 ```
 
 These commands only inspect logs, container configuration, the mapped device node, and HTTP health. They do not change I2C settings, permissions, containers, or host configuration.
@@ -65,28 +65,30 @@ These commands only inspect logs, container configuration, the mapped device nod
 4. Verifies the image reports Linux ARM64 and serves `/healthz`.
 5. Saves and gzip-compresses the complete image as `ir-camera-arm64.tar.gz`.
 6. Verifies Docker can load the compressed archive directly.
-7. Creates a commit-specific GitHub Release for every successful `main` build and attaches the archive.
-8. Attaches `v*` tag builds to their matching version releases.
+7. Creates a commit-specific GitHub Release for every successful `main` build and attaches both the image archive and matching `compose.yaml`.
+8. Attaches `v*` tag builds and their matching `compose.yaml` to version releases.
 
 The runner must have Docker access and outbound access to container registries, Debian package repositories, PyPI, and the official GitHub Actions used by the workflow. No proxy credentials or deployment credentials are stored in the repository. CI never connects to the Raspberry Pi.
 
 ## Download and transfer from Windows PowerShell
 
-Every successful `main` build becomes a GitHub Release. Download the newest ARM64 image directly from the latest release:
+Every successful `main` build becomes a GitHub Release. Download both the ARM64 image and the matching Compose file from the same latest release:
 
 ```powershell
-$ReleaseUrl = "https://github.com/samuelfirmansyahatbshg/IR-Camera/releases/latest/download/ir-camera-arm64.tar.gz"
+$ReleaseBase = "https://github.com/samuelfirmansyahatbshg/IR-Camera/releases/latest/download"
 $ImagePath = "$HOME\Downloads\ir-camera-arm64.tar.gz"
-Invoke-WebRequest -Uri $ReleaseUrl -OutFile $ImagePath
-Get-Item $ImagePath
+$ComposePath = "$HOME\Downloads\compose.yaml"
+Invoke-WebRequest -Uri "$ReleaseBase/ir-camera-arm64.tar.gz" -OutFile $ImagePath
+Invoke-WebRequest -Uri "$ReleaseBase/compose.yaml" -OutFile $ComposePath
+Get-Item $ImagePath, $ComposePath
 ```
 
-Release assets are downloaded directly as `.tar.gz` files. There is no Actions artifact ZIP to extract.
+Release assets are downloaded directly. There is no Actions artifact ZIP to extract.
 
-Transfer the Docker image to the Raspberry Pi:
+Transfer both files to the Raspberry Pi. Updating `compose.yaml` is required because older deployments referenced `ir-camera-app:latest` instead of the CI image tag `ir-camera:arm64`.
 
 ```powershell
-scp -i "$HOME\.ssh\pi_key" "$HOME\Downloads\ir-camera-arm64.tar.gz" firmansyah@nbnlle0004.bsh.corp.bshg.com:~/IR-Camera/
+scp -i "$HOME\.ssh\pi_key" "$HOME\Downloads\ir-camera-arm64.tar.gz" "$HOME\Downloads\compose.yaml" firmansyah@nbnlle0004.bsh.corp.bshg.com:~/IR-Camera/
 ```
 
 The separately managed Nginx configuration can still be transferred independently from the sibling local directory:
@@ -108,13 +110,13 @@ mkdir -p ~/IR-Camera/rollback
 docker image save ir-camera:arm64 | gzip > ~/IR-Camera/rollback/ir-camera-arm64-before-update.tar.gz
 ```
 
-Load the CI image and force-recreate the camera container from Windows PowerShell:
+Load the CI image, validate the transferred Compose file, recreate the camera container, and wait for direct application health:
 
 ```powershell
-ssh -i "$HOME\.ssh\pi_key" firmansyah@nbnlle0004.bsh.corp.bshg.com 'set -e; docker load -i ~/IR-Camera/ir-camera-arm64.tar.gz && cd ~/IR-Camera && docker compose up -d --no-build --pull never --force-recreate && docker compose ps'
+ssh -i "$HOME\.ssh\pi_key" firmansyah@nbnlle0004.bsh.corp.bshg.com 'set -e; docker load -i ~/IR-Camera/ir-camera-arm64.tar.gz; cd ~/IR-Camera; docker compose config --quiet; docker compose up -d --no-build --pull never --force-recreate; for attempt in $(seq 1 30); do if curl --noproxy "*" --fail --silent --show-error http://localhost:3000/healthz; then break; fi; if [ "$attempt" -eq 30 ]; then docker logs --tail 100 ir-camera-app; exit 1; fi; sleep 2; done; docker compose ps'
 ```
 
-`compose.yaml` already references `ir-camera:arm64`, so an additional `ir-camera-app:latest` tag is not required.
+The transferred `compose.yaml` references `ir-camera:arm64`, matching the tag stored in the release archive. No additional image tag is required. `--noproxy "*"` prevents a host proxy from redirecting the local health request to a proxy such as `localhost:3128`.
 
 Inspect the camera container after deployment:
 
@@ -131,8 +133,8 @@ gzip -dc ~/IR-Camera/ir-camera-arm64.tar.gz | docker load
 Verify both the application and external Nginx route:
 
 ```bash
-curl --fail http://localhost:3000/healthz
-curl --fail http://localhost/IR-Camera/healthz
+curl --noproxy "*" --fail http://localhost:3000/healthz
+curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 ```
 
 The camera opens when the first browser requests `/IR-Camera/video_feed`. Container logs report I2C or sensor initialization failures.
@@ -145,8 +147,8 @@ Keep previous successful GitHub Release images under `~/IR-Camera/rollback/`, wi
 docker load -i ~/IR-Camera/rollback/ir-camera-arm64-<release-tag>.tar.gz
 cd ~/IR-Camera
 docker compose up -d --no-build --pull never --force-recreate
-curl --fail http://localhost:3000/healthz
-curl --fail http://localhost/IR-Camera/healthz
+curl --noproxy "*" --fail http://localhost:3000/healthz
+curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 ```
 
 To restore the archive saved immediately before an update:
