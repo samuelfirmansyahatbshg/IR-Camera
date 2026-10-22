@@ -45,25 +45,20 @@ The runner must have Docker access and outbound access to container registries, 
 
 ## Download and transfer from Windows PowerShell
 
-Install and authenticate GitHub CLI once, then download the newest successful `main` artifact:
+Download the `ir-camera-arm64` artifact from the successful GitHub Actions run. GitHub downloads the artifact as a ZIP file.
+
+Extract the downloaded ZIP automatically:
 
 ```powershell
-$Repo = "samuelfirmansyahatbshg/IR-Camera"
-$RunId = gh run list --repo $Repo --workflow build.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-$DownloadDir = Join-Path $HOME "Downloads\IR-Camera-$RunId"
-New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
-gh run download $RunId --repo $Repo --name ir-camera-arm64 --dir $DownloadDir
-Get-Item (Join-Path $DownloadDir "ir-camera-arm64.tar.gz")
+Expand-Archive -Path "$HOME\Downloads\ir-camera-arm64.zip" -DestinationPath "$HOME\Downloads\IR-Camera-Extracted" -Force
 ```
 
-The Actions web interface can also download the `ir-camera-arm64` artifact. Browser downloads wrap the artifact in a ZIP file; extract that ZIP to obtain `ir-camera-arm64.tar.gz`.
+If GitHub downloaded the ZIP under a different filename, replace `ir-camera-arm64.zip` with its actual name.
 
-Copy the image and current Compose file to the Raspberry Pi:
+Transfer the extracted Docker image to the Raspberry Pi:
 
 ```powershell
-ssh user@server 'mkdir -p ~/IR-Camera'
-scp (Join-Path $DownloadDir "ir-camera-arm64.tar.gz") user@server:~/IR-Camera/ir-camera-arm64.tar.gz
-scp .\IR-Camera\compose.yaml user@server:~/IR-Camera/compose.yaml
+scp -i "$HOME\.ssh\pi_key" "$HOME\Downloads\IR-Camera-Extracted\ir-camera-arm64.tar.gz" firmansyah@nbnlle0004.bsh.corp.bshg.com:~/IR-Camera/
 ```
 
 The separately managed Nginx configuration can still be transferred independently from the sibling local directory:
