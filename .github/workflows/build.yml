@@ -88,7 +88,7 @@ jobs:
           test "$(docker image inspect "$IMAGE_NAME:$IMAGE_TAG" --format '{{.Architecture}}')" = "arm64"
 
           docker run --rm --platform linux/arm64 "$IMAGE_NAME:$IMAGE_TAG" \
-            python -c "from importlib.metadata import version; import adafruit_mlx90640, cv2, flask, gunicorn, numpy; print({name: version(name) for name in ('Adafruit-Blinka', 'adafruit-circuitpython-mlx90640', 'Flask', 'gunicorn', 'numpy', 'opencv-python-headless')})"
+            python -c "from importlib.metadata import version; import adafruit_mlx90640, cv2, flask, gunicorn, numpy; print({name: version(name) for name in ('Adafruit-Blinka', 'adafruit-circuitpython-mlx90640', 'Flask', 'gunicorn', 'numpy', 'opencv-python-headless', 'RPi.GPIO')})"
 
           cleanup() {
             docker rm --force ir-camera-ci >/dev/null 2>&1 || true

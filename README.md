@@ -81,12 +81,18 @@ mkdir -p ~/IR-Camera/rollback
 docker image save ir-camera:arm64 | gzip > ~/IR-Camera/rollback/ir-camera-arm64-before-update.tar.gz
 ```
 
-Load the CI image and recreate the camera container without building or pulling:
+Load the CI image and force-recreate the camera container from Windows PowerShell:
 
-```bash
-docker load -i ~/IR-Camera/ir-camera-arm64.tar.gz
-cd ~/IR-Camera
-docker compose up -d --no-build --pull never
+```powershell
+ssh -i "$HOME\.ssh\pi_key" firmansyah@nbnlle0004.bsh.corp.bshg.com 'set -e; docker load -i ~/IR-Camera/ir-camera-arm64.tar.gz && cd ~/IR-Camera && docker compose up -d --no-build --pull never --force-recreate && docker compose ps'
+```
+
+`compose.yaml` already references `ir-camera:arm64`, so an additional `ir-camera-app:latest` tag is not required.
+
+Inspect the camera container after deployment:
+
+```powershell
+ssh -i "$HOME\.ssh\pi_key" firmansyah@nbnlle0004.bsh.corp.bshg.com 'docker logs --tail 50 ir-camera-app'
 ```
 
 The CI workflow verifies direct loading of the gzip-compressed Docker archive. If an older Docker Engine rejects compressed input, stream decompression without installing anything:
