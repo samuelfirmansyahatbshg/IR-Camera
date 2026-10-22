@@ -38,27 +38,28 @@ The Raspberry Pi never builds the image and never installs Python, Debian, or Ng
 4. Verifies the image reports Linux ARM64 and serves `/healthz`.
 5. Saves and gzip-compresses the complete image as `ir-camera-arm64.tar.gz`.
 6. Verifies Docker can load the compressed archive directly.
-7. Uploads the archive as the `ir-camera-arm64` Actions artifact for 30 days.
-8. Attaches the archive to a GitHub Release when a `v*` tag is pushed.
+7. Creates a commit-specific GitHub Release for every successful `main` build and attaches the archive.
+8. Attaches `v*` tag builds to their matching version releases.
 
 The runner must have Docker access and outbound access to container registries, Debian package repositories, PyPI, and the official GitHub Actions used by the workflow. No proxy credentials or deployment credentials are stored in the repository. CI never connects to the Raspberry Pi.
 
 ## Download and transfer from Windows PowerShell
 
-Download the `ir-camera-arm64` artifact from the successful GitHub Actions run. GitHub downloads the artifact as a ZIP file.
-
-Extract the downloaded ZIP automatically:
+Every successful `main` build becomes a GitHub Release. Download the newest ARM64 image directly from the latest release:
 
 ```powershell
-Expand-Archive -Path "$HOME\Downloads\ir-camera-arm64.zip" -DestinationPath "$HOME\Downloads\IR-Camera-Extracted" -Force
+$ReleaseUrl = "https://github.com/samuelfirmansyahatbshg/IR-Camera/releases/latest/download/ir-camera-arm64.tar.gz"
+$ImagePath = "$HOME\Downloads\ir-camera-arm64.tar.gz"
+Invoke-WebRequest -Uri $ReleaseUrl -OutFile $ImagePath
+Get-Item $ImagePath
 ```
 
-If GitHub downloaded the ZIP under a different filename, replace `ir-camera-arm64.zip` with its actual name.
+Release assets are downloaded directly as `.tar.gz` files. There is no Actions artifact ZIP to extract.
 
-Transfer the extracted Docker image to the Raspberry Pi:
+Transfer the Docker image to the Raspberry Pi:
 
 ```powershell
-scp -i "$HOME\.ssh\pi_key" "$HOME\Downloads\IR-Camera-Extracted\ir-camera-arm64.tar.gz" firmansyah@nbnlle0004.bsh.corp.bshg.com:~/IR-Camera/
+scp -i "$HOME\.ssh\pi_key" "$HOME\Downloads\ir-camera-arm64.tar.gz" firmansyah@nbnlle0004.bsh.corp.bshg.com:~/IR-Camera/
 ```
 
 The separately managed Nginx configuration can still be transferred independently from the sibling local directory:
@@ -105,10 +106,10 @@ The camera opens when the first browser requests `/IR-Camera/video_feed`. Contai
 
 ## Roll back
 
-Keep previous successful CI artifacts under `~/IR-Camera/rollback/`, with the run ID or version in each filename. Loading an older artifact restores its included `ir-camera:arm64` tag:
+Keep previous successful GitHub Release images under `~/IR-Camera/rollback/`, with the release tag or version in each filename. Loading an older release image restores its included `ir-camera:arm64` tag:
 
 ```bash
-docker load -i ~/IR-Camera/rollback/ir-camera-arm64-<run-id>.tar.gz
+docker load -i ~/IR-Camera/rollback/ir-camera-arm64-<release-tag>.tar.gz
 cd ~/IR-Camera
 docker compose up -d --no-build --pull never --force-recreate
 curl --fail http://localhost:3000/healthz
