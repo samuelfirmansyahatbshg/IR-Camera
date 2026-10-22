@@ -473,6 +473,9 @@ def create_app(camera: Camera | None = None) -> Flask:
                 height: 100%;
                 object-fit: contain;
               }
+              .camera.is-offline img {
+                visibility: hidden;
+              }
               .camera-offline {
                 position: absolute;
                 inset: 0;
@@ -542,8 +545,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                 CONNECTING TO CAMERA
               </div>
               <div class="layout">
-                <div class="camera">
-                  <img src="video_feed" width="640" height="480"
+                <div id="camera-frame" class="camera">
+                  <img id="camera-image" src="video_feed" width="640" height="480"
                        alt="Live MLX90640 thermal camera feed">
                   <div id="camera-offline" class="camera-offline" hidden>
                     <strong>CAMERA OFFLINE</strong>
@@ -574,6 +577,9 @@ def create_app(camera: Camera | None = None) -> Flask:
               const banner = document.getElementById("camera-status");
               const offline = document.getElementById("camera-offline");
               const error = document.getElementById("camera-error");
+              const frame = document.getElementById("camera-frame");
+              const image = document.getElementById("camera-image");
+              let wasOffline = false;
               const fpsValue = document.getElementById("fps-value");
               const viewersValue = document.getElementById("viewers-value");
               const viewersMax = document.getElementById("viewers-max");
@@ -589,7 +595,15 @@ def create_app(camera: Camera | None = None) -> Flask:
                   const status = await response.json();
                   banner.className = `status ${status.state}`;
                   banner.textContent = `${status.message} - ${status.detail}`;
-                  offline.hidden = status.state !== "offline";
+                  const isOffline = status.state === "offline";
+                  offline.hidden = !isOffline;
+                  frame.classList.toggle("is-offline", isOffline);
+                  // The MJPEG response ended while the sensor was down; ask
+                  // the browser for a fresh stream once frames return.
+                  if (wasOffline && !isOffline) {
+                    image.src = `video_feed?retry=${Date.now()}`;
+                  }
+                  wasOffline = isOffline;
                   error.textContent = status.detail;
                   fpsValue.textContent =
                     status.fps === null ? "--" : status.fps.toFixed(1);
@@ -600,6 +614,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                   banner.textContent =
                     `CAMERA STATUS UNAVAILABLE - ${requestError.message}`;
                   offline.hidden = false;
+                  frame.classList.add("is-offline");
+                  wasOffline = true;
                   error.textContent =
                     "The application cannot report the MLX90640 status.";
                   fpsValue.textContent = "--";
