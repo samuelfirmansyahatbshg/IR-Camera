@@ -22,8 +22,18 @@ MAX_TEMPERATURE_C = 45.0
 FRAME_READ_ATTEMPTS = 3
 FRAME_RETRY_DELAY_SECONDS = 0.1
 CAPTURE_FAILURE_DELAY_SECONDS = 0.5
+# Gunicorn runs one worker with a fixed thread pool and every MJPEG viewer
+# holds its thread for the whole response. Capping concurrent viewers keeps
+# threads free for the page, the status poll and the health check.
+MAX_STREAM_VIEWERS = 4
+# Frames averaged for the published capture rate.
+FPS_SAMPLE_FRAMES = 10
 FRAME_READ_ERRORS = (RuntimeError, ValueError, OSError)
 LOGGER = logging.getLogger(__name__)
+
+
+class StreamCapacityError(RuntimeError):
+    """Raised when the thermal stream already serves its viewer limit."""
 
 
 class Camera(Protocol):
@@ -196,10 +206,17 @@ class FrameBroadcaster:
         camera: Camera,
         *,
         failure_delay: float = CAPTURE_FAILURE_DELAY_SECONDS,
+        max_viewers: int = MAX_STREAM_VIEWERS,
+        clock: Callable[[], float] = time.monotonic,
         logger: logging.Logger | None = None,
     ) -> None:
+        if max_viewers < 1:
+            raise ValueError("max_viewers must be at least 1")
+
         self._camera = camera
         self._failure_delay = failure_delay
+        self._max_viewers = max_viewers
+        self._clock = clock
         self._logger = logger if logger is not None else LOGGER
         self._condition = threading.Condition()
         self._capture_thread: threading.Thread | None = None
@@ -207,45 +224,78 @@ class FrameBroadcaster:
         self._stop_requested = False
         self._latest_frame: bytes | None = None
         self._sequence = 0
+        self._frame_times: list[float] = []
 
     @property
     def subscriber_count(self) -> int:
         with self._condition:
             return self._subscriber_count
 
-    def camera_status(self) -> dict[str, str]:
+    @property
+    def max_viewers(self) -> int:
+        return self._max_viewers
+
+    def _capture_fps(self) -> float | None:
+        """Mean capture rate of the recent frames, or None below two samples."""
+        if len(self._frame_times) < 2:
+            return None
+        elapsed = self._frame_times[-1] - self._frame_times[0]
+        if elapsed <= 0:
+            return None
+        return (len(self._frame_times) - 1) / elapsed
+
+    def camera_status(self) -> dict[str, object]:
         error = getattr(self._camera, "last_error", None)
         with self._condition:
             has_frame = self._latest_frame is not None
             capture_running = self._capture_thread is not None
+            viewers = self._subscriber_count
+            fps = self._capture_fps()
 
+        status: dict[str, object] = {
+            "viewers": viewers,
+            "max_viewers": self._max_viewers,
+            "fps": None if fps is None else round(fps, 1),
+        }
         if error:
-            return {
-                "state": "offline",
-                "message": "CAMERA OFFLINE",
-                "detail": (
+            status.update(
+                state="offline",
+                message="CAMERA OFFLINE",
+                detail=(
                     "MLX90640 at I2C address 0x33 is not responding. "
                     f"{error}"
                 ),
-            }
-        if has_frame:
-            return {
-                "state": "online",
-                "message": "CAMERA ONLINE",
-                "detail": "Live thermal frames are available.",
-            }
-        return {
-            "state": "connecting",
-            "message": "CONNECTING TO CAMERA",
-            "detail": (
-                "Waiting for the first MLX90640 frame."
-                if capture_running
-                else "The thermal stream has not started yet."
-            ),
-        }
+            )
+        elif has_frame:
+            status.update(
+                state="online",
+                message="CAMERA ONLINE",
+                detail="Live thermal frames are available.",
+            )
+        else:
+            status.update(
+                state="connecting",
+                message="CONNECTING TO CAMERA",
+                detail=(
+                    "Waiting for the first MLX90640 frame."
+                    if capture_running
+                    else "The thermal stream has not started yet."
+                ),
+            )
+        return status
 
     def frames(self) -> Iterator[bytes]:
+        """Subscribe to the shared stream, refusing viewers beyond the cap."""
         with self._condition:
+            if self._subscriber_count >= self._max_viewers:
+                self._logger.warning(
+                    "Refusing thermal stream viewer; viewers=%d reached the cap",
+                    self._subscriber_count,
+                )
+                raise StreamCapacityError(
+                    f"The thermal stream already serves {self._max_viewers} "
+                    "viewers. Close an open tab and retry."
+                )
             self._subscriber_count += 1
             self._stop_requested = False
             previous_sequence = self._sequence
@@ -260,7 +310,9 @@ class FrameBroadcaster:
                 "Thermal stream viewer connected; viewers=%d",
                 self._subscriber_count,
             )
+        return self._subscribed_frames(previous_sequence)
 
+    def _subscribed_frames(self, previous_sequence: int) -> Iterator[bytes]:
         try:
             while True:
                 with self._condition:
@@ -302,6 +354,7 @@ class FrameBroadcaster:
 
                 if temperatures is None:
                     with self._condition:
+                        self._frame_times.clear()
                         if self._condition.wait_for(
                             lambda: (
                                 self._stop_requested
@@ -336,6 +389,9 @@ class FrameBroadcaster:
                 with self._condition:
                     self._latest_frame = multipart_frame
                     self._sequence += 1
+                    self._frame_times.append(self._clock())
+                    if len(self._frame_times) > FPS_SAMPLE_FRAMES:
+                        del self._frame_times[:-FPS_SAMPLE_FRAMES]
                     self._condition.notify_all()
         finally:
             with self._condition:
@@ -439,6 +495,44 @@ def create_app(camera: Camera | None = None) -> Flask:
                 font-size: 1.1rem;
               }
             </style>
+            <style>
+              .layout {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 180px;
+                gap: 16px;
+                align-items: start;
+              }
+              @media (max-width: 640px) {
+                .layout {
+                  grid-template-columns: minmax(0, 1fr);
+                }
+              }
+              .metrics {
+                border: 2px solid #374151;
+                border-radius: 8px;
+                padding: 14px;
+                background: #0b1220;
+              }
+              .metric + .metric {
+                margin-top: 14px;
+              }
+              .metric-label {
+                font-size: 0.75rem;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: #9ca3af;
+              }
+              .metric-value {
+                font-size: 2rem;
+                font-weight: 800;
+                font-variant-numeric: tabular-nums;
+              }
+              .metric-unit {
+                font-size: 0.9rem;
+                color: #9ca3af;
+                margin-left: 4px;
+              }
+            </style>
           </head>
           <body>
             <main>
@@ -447,21 +541,42 @@ def create_app(camera: Camera | None = None) -> Flask:
                    role="alert" aria-live="assertive">
                 CONNECTING TO CAMERA
               </div>
-              <div class="camera">
-                <img src="video_feed" width="640" height="480"
-                     alt="Live MLX90640 thermal camera feed">
-                <div id="camera-offline" class="camera-offline" hidden>
-                  <strong>CAMERA OFFLINE</strong>
-                  <span id="camera-error">
-                    MLX90640 at I2C address 0x33 is not responding.
-                  </span>
+              <div class="layout">
+                <div class="camera">
+                  <img src="video_feed" width="640" height="480"
+                       alt="Live MLX90640 thermal camera feed">
+                  <div id="camera-offline" class="camera-offline" hidden>
+                    <strong>CAMERA OFFLINE</strong>
+                    <span id="camera-error">
+                      MLX90640 at I2C address 0x33 is not responding.
+                    </span>
+                  </div>
                 </div>
+                <aside class="metrics" aria-label="Stream metrics">
+                  <div class="metric">
+                    <div class="metric-label">Capture rate</div>
+                    <div>
+                      <span id="fps-value" class="metric-value">--</span
+                      ><span class="metric-unit">fps</span>
+                    </div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-label">Viewers</div>
+                    <div>
+                      <span id="viewers-value" class="metric-value">0</span
+                      ><span id="viewers-max" class="metric-unit"></span>
+                    </div>
+                  </div>
+                </aside>
               </div>
             </main>
             <script>
               const banner = document.getElementById("camera-status");
               const offline = document.getElementById("camera-offline");
               const error = document.getElementById("camera-error");
+              const fpsValue = document.getElementById("fps-value");
+              const viewersValue = document.getElementById("viewers-value");
+              const viewersMax = document.getElementById("viewers-max");
 
               async function refreshCameraStatus() {
                 try {
@@ -476,6 +591,10 @@ def create_app(camera: Camera | None = None) -> Flask:
                   banner.textContent = `${status.message} - ${status.detail}`;
                   offline.hidden = status.state !== "offline";
                   error.textContent = status.detail;
+                  fpsValue.textContent =
+                    status.fps === null ? "--" : status.fps.toFixed(1);
+                  viewersValue.textContent = String(status.viewers);
+                  viewersMax.textContent = `/ ${status.max_viewers}`;
                 } catch (requestError) {
                   banner.className = "status offline";
                   banner.textContent =
@@ -483,11 +602,12 @@ def create_app(camera: Camera | None = None) -> Flask:
                   offline.hidden = false;
                   error.textContent =
                     "The application cannot report the MLX90640 status.";
+                  fpsValue.textContent = "--";
                 }
               }
 
               refreshCameraStatus();
-              window.setInterval(refreshCameraStatus, 2000);
+              window.setInterval(refreshCameraStatus, 1000);
             </script>
           </body>
         </html>
@@ -495,8 +615,12 @@ def create_app(camera: Camera | None = None) -> Flask:
 
     @app.get("/video_feed")
     def video_feed():
+        try:
+            subscription = stream.frames()
+        except StreamCapacityError as error:
+            return jsonify(error=str(error)), 503
         return Response(
-            stream.frames(),
+            subscription,
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
 

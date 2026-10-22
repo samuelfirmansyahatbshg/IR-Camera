@@ -79,6 +79,55 @@ def test_home_page_embeds_the_live_feed():
     assert b"CAMERA OFFLINE" in response.data
     assert b'fetch("camera_status"' in response.data
 
+def test_home_page_shows_a_capture_rate_readout():
+    app = create_app(camera=FixedCamera())
+    app.config.update(TESTING=True)
+
+    response = app.test_client().get("/")
+
+    assert b'id="fps-value"' in response.data
+    assert b"Capture rate" in response.data
+    assert b"fps" in response.data
+
+
+def test_camera_status_publishes_capture_rate_and_viewer_capacity():
+    clock = iter([10.0, 10.5, 11.0, 11.5, 12.0, 12.5]).__next__
+    stream = FrameBroadcaster(FixedCamera(), max_viewers=3, clock=clock)
+    subscription = stream.frames()
+
+    next(subscription)
+    next(subscription)
+    next(subscription)
+    status = stream.camera_status()
+    subscription.close()
+
+    assert status["fps"] == 2.0
+    assert status["max_viewers"] == 3
+    assert status["state"] == "online"
+
+
+def test_video_feed_rejects_viewers_beyond_the_cap_without_blocking():
+    app = create_app(camera=FixedCamera())
+    app.config.update(TESTING=True)
+    stream = app.extensions["thermal_stream"]
+    client = app.test_client()
+
+    held = []
+    for _ in range(stream.max_viewers):
+        response = client.get("/video_feed", buffered=False)
+        next(response.response)
+        held.append(response)
+
+    rejected = client.get("/video_feed")
+    status_during_load = client.get("/camera_status")
+    for response in held:
+        response.close()
+
+    assert rejected.status_code == 503
+    assert "already serves" in rejected.get_json()["error"]
+    assert status_during_load.status_code == 200
+    assert status_during_load.get_json()["viewers"] == stream.max_viewers
+
 def test_camera_status_reports_connecting_before_the_first_frame():
     app = create_app(camera=FixedCamera())
     app.config.update(TESTING=True)
@@ -86,11 +135,11 @@ def test_camera_status_reports_connecting_before_the_first_frame():
     response = app.test_client().get("/camera_status")
 
     assert response.status_code == 200
-    assert response.get_json() == {
-        "state": "connecting",
-        "message": "CONNECTING TO CAMERA",
-        "detail": "The thermal stream has not started yet.",
-    }
+    payload = response.get_json()
+    assert payload["state"] == "connecting"
+    assert payload["message"] == "CONNECTING TO CAMERA"
+    assert payload["detail"] == "The thermal stream has not started yet."
+    assert payload["fps"] is None
 
 
 def test_camera_status_reports_online_after_a_frame():
@@ -104,11 +153,10 @@ def test_camera_status_reports_online_after_a_frame():
     response = client.get("/camera_status")
 
     assert response.status_code == 200
-    assert response.get_json() == {
-        "state": "online",
-        "message": "CAMERA ONLINE",
-        "detail": "Live thermal frames are available.",
-    }
+    payload = response.get_json()
+    assert payload["state"] == "online"
+    assert payload["message"] == "CAMERA ONLINE"
+    assert payload["detail"] == "Live thermal frames are available."
 
 
 def test_camera_status_loudly_reports_the_latest_sensor_error():
@@ -123,14 +171,14 @@ def test_camera_status_loudly_reports_the_latest_sensor_error():
     response = app.test_client().get("/camera_status")
 
     assert response.status_code == 200
-    assert response.get_json() == {
-        "state": "offline",
-        "message": "CAMERA OFFLINE",
-        "detail": (
-            "MLX90640 at I2C address 0x33 is not responding. "
-            "OSError: remote I/O error"
-        ),
-    }
+    payload = response.get_json()
+    assert payload["state"] == "offline"
+    assert payload["message"] == "CAMERA OFFLINE"
+    assert payload["detail"] == (
+        "MLX90640 at I2C address 0x33 is not responding. "
+        "OSError: remote I/O error"
+    )
+    assert payload["fps"] is None
 
 
 def test_video_feed_emits_a_multipart_jpeg_frame():

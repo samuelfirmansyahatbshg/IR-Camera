@@ -36,7 +36,9 @@ The sensor starts at 2 Hz while frame reliability is being diagnosed. Each captu
 
 The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the temperature label and hot-point ring are drawn. Annotations therefore remain readable and do not obscure the thermal image.
 
-The browser polls `/camera_status` every two seconds. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
+The browser polls `/camera_status` every second. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. The side panel shows the measured capture rate in frames per second and the number of connected viewers. `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
+
+Gunicorn runs one worker with a fixed thread pool and every MJPEG response holds its thread until the viewer disconnects. `MAX_STREAM_VIEWERS` caps concurrent `/video_feed` subscribers so the page, the status poll and the health check always keep free threads; additional viewers receive `503` with an explanatory message instead of hanging the site.
 
 The confirmed repository defects were:
 
@@ -44,6 +46,7 @@ The confirmed repository defects were:
 - Every viewer previously ran its own read loop. The existing lock prevented simultaneous calls, but multiple viewers still multiplied sequential sensor reads.
 - The initial 8 Hz refresh setting gave the bus and sensor less recovery margin.
 - The temperature label and hot-point marker were drawn onto the native 32 x 24 frame and then enlarged 20 times, producing the giant white `Ho` shapes and star seen in the stream.
+- Unbounded `/video_feed` subscribers consumed every Gunicorn thread, so the page, the status poll and the health check stalled while viewers were connected.
 
 The underlying reason the MLX90640 library reports `Too many retries` is not established without hardware evidence. An ACK at address `0x33` confirms that a device responds, not that full frame transfers succeed. Remaining possibilities include I2C signal integrity, power stability, clock behavior, bus frequency compatibility, or the sensor itself.
 
