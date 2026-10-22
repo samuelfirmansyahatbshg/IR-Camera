@@ -28,6 +28,33 @@ Camera files and downloaded image archives stay in `~/IR-Camera/`. The Nginx con
 
 The Raspberry Pi never builds the image and never installs Python, Debian, or Nginx packages. `compose.yaml` sets `pull_policy: never` and uses the fixed image tag `ir-camera:arm64`.
 
+## Frame capture behavior
+
+The web process uses one shared MLX90640 capture thread for all browser connections. Viewers receive the same encoded MJPEG frame instead of starting independent sensor read loops. I2C initialization and frame reads remain protected by the camera instance's lock; the production Gunicorn command intentionally keeps one worker and one camera instance.
+
+The sensor starts at 2 Hz while frame reliability is being diagnosed. Each capture cycle makes at most three `getFrame` attempts, waits 100 ms between transient failures, and accepts `RuntimeError`, `ValueError`, and `OSError` as recoverable frame failures. After an exhausted cycle, the capture loop waits 500 ms before trying a new bounded cycle. Persistent failures therefore remain visible in logs without terminating the MJPEG response or creating a busy retry loop.
+
+The confirmed repository defects were:
+
+- `RuntimeError: Too many retries` escaped the camera adapter because it caught only `ValueError`, terminating that viewer's MJPEG generator.
+- Every viewer previously ran its own read loop. The existing lock prevented simultaneous calls, but multiple viewers still multiplied sequential sensor reads.
+- The initial 8 Hz refresh setting gave the bus and sensor less recovery margin.
+
+The underlying reason the MLX90640 library reports `Too many retries` is not established without hardware evidence. An ACK at address `0x33` confirms that a device responds, not that full frame transfers succeed. Remaining possibilities include I2C signal integrity, power stability, clock behavior, bus frequency compatibility, or the sensor itself.
+
+If failures continue, run these read-only diagnostics manually on the Raspberry Pi:
+
+```bash
+docker logs --tail 100 ir-camera-app
+docker inspect --format '{{json .HostConfig.Devices}}' ir-camera-app
+docker exec ir-camera-app ls -l /dev/i2c-1
+curl --fail http://localhost:3000/healthz
+curl --fail http://localhost/IR-Camera/healthz
+```
+
+These commands only inspect logs, container configuration, the mapped device node, and HTTP health. They do not change I2C settings, permissions, containers, or host configuration.
+
+
 ## CI pipeline
 
 `.github/workflows/build.yml` runs for pushes to `main`, version tags matching `v*`, and manual dispatches. It:
