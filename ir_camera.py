@@ -10,7 +10,7 @@ from typing import Protocol
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, url_for
+from flask import Flask, Response, jsonify
 
 FRAME_WIDTH = 32
 FRAME_HEIGHT = 24
@@ -136,7 +136,7 @@ def create_app(camera: Camera | None = None) -> Flask:
           </head>
           <body>
             <h1>Live Thermal Camera Feed</h1>
-            <img src="{url_for('video_feed')}" width="640" height="480"
+            <img src="video_feed" width="640" height="480"
                  alt="Live MLX90640 thermal camera feed">
           </body>
         </html>

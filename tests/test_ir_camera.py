@@ -23,7 +23,7 @@ def test_home_page_embeds_the_live_feed():
 
     assert response.status_code == 200
     assert b"Live Thermal Camera Feed" in response.data
-    assert b'/video_feed' in response.data
+    assert b'src="video_feed"' in response.data
 
 
 def test_video_feed_emits_a_multipart_jpeg_frame():

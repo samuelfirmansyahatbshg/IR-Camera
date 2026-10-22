@@ -1,6 +1,6 @@
 # IR Camera
 
-MLX90640 Raspberry Pi thermal camera web streamer. The browser displays the supplied OpenCV inferno stream at 640 x 480 through Nginx.
+MLX90640 Raspberry Pi thermal camera web streamer. The application publishes its OpenCV inferno stream on host port 3000. A separately managed Nginx container exposes it below `/IR-Camera/`.
 
 ## Hardware
 
@@ -17,38 +17,52 @@ The default sensor address is `0x33`. Enable I2C on the Raspberry Pi and confirm
 ls -l /dev/i2c-1
 ```
 
-## Containers
+## Runtime
 
-- `ir-camera-nginx`: host port 80
-- `ir-camera-app`: Gunicorn and Flask on private container port 3000
+- `ir-camera-app`: Gunicorn and Flask on host port 3000
+- `ir-camera-nginx`: separately managed Nginx container on host port 80
 - MLX90640 access: `/dev/i2c-1` passed to `ir-camera-app`
 
-All project files stay in `~/IR-Camera/`. Docker manages its image and container storage system-wide.
+Camera source and Docker build files stay in `~/IR-Camera/`. The Nginx configuration stays outside this repository at `~/nginx/default.conf`.
 
 ## First deployment
 
-From the computer containing this repository, replace `user@server` with the Raspberry Pi SSH destination:
+Keep the local `IR-Camera/` and `nginx/` directories beside each other. Replace `user@server` with the Raspberry Pi SSH destination:
 
 ```sh
-ssh user@server 'mkdir -p ~/IR-Camera'
+ssh user@server 'mkdir -p ~/IR-Camera ~/nginx'
 scp -r ./IR-Camera/. user@server:~/IR-Camera/
+scp ./nginx/default.conf user@server:~/nginx/default.conf
 ssh user@server 'cd ~/IR-Camera && docker compose up -d --build --remove-orphans'
 ```
 
-Open `http://<raspberry-pi-address>/`.
+Start the separately managed Nginx container:
+
+```sh
+ssh user@server 'docker rm -f ir-camera-nginx 2>/dev/null || true; docker run -d --name ir-camera-nginx -p 80:80 --restart unless-stopped --add-host=host.docker.internal:host-gateway -v "$HOME/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" nginx:alpine'
+```
+
+Open `http://<raspberry-pi-address>/IR-Camera/`.
 
 ## Deploy an updated Python application
 
 ```sh
 scp ./IR-Camera/ir_camera.py user@server:~/IR-Camera/ir_camera.py
-ssh user@server 'cd ~/IR-Camera && docker compose up -d --build app'
+ssh user@server 'cd ~/IR-Camera && docker compose up -d --build'
 ```
 
-Deploy the entire directory when `Dockerfile`, `requirements.txt`, `compose.yaml`, or the Nginx configuration changes:
+Deploy the entire camera project when `Dockerfile`, `requirements.txt`, or `compose.yaml` changes:
 
 ```sh
 scp -r ./IR-Camera/. user@server:~/IR-Camera/
 ssh user@server 'cd ~/IR-Camera && docker compose up -d --build --remove-orphans'
+```
+
+Deploy an updated external Nginx configuration independently:
+
+```sh
+scp ./nginx/default.conf user@server:~/nginx/default.conf
+ssh user@server 'docker restart ir-camera-nginx'
 ```
 
 ## Operations
@@ -61,13 +75,14 @@ docker compose restart
 docker compose down
 ```
 
-The liveness endpoint is available through Nginx:
+Check the application directly or through Nginx:
 
 ```sh
-curl --fail http://localhost/healthz
+curl --fail http://localhost:3000/healthz
+curl --fail http://localhost/IR-Camera/healthz
 ```
 
-The camera is opened when the first browser requests `/video_feed`. Container logs report I2C or sensor initialization failures.
+The camera is opened when the first browser requests `/IR-Camera/video_feed`. Container logs report I2C or sensor initialization failures.
 
 ## Local tests
 
