@@ -186,6 +186,7 @@ def test_camera_status_reports_online_after_a_frame():
     assert payload["state"] == "online"
     assert payload["message"] == "CAMERA ONLINE"
     assert payload["detail"] == "Live thermal frames are available."
+    assert payload["average_celsius"] == 30.0
 
 
 def test_camera_status_loudly_reports_the_latest_sensor_error():
@@ -224,34 +225,33 @@ def test_video_feed_emits_a_multipart_jpeg_frame():
     assert first_part.endswith(b"\xff\xd9\r\n")
 
 
-def test_rendered_frame_has_browser_display_dimensions():
+def test_rendered_frame_keeps_the_sensor_resolution():
     temperatures = FixedCamera().read_frame()
 
     image = render_thermal_frame(temperatures)
 
-    assert image.shape == (FRAME_HEIGHT * 20, FRAME_WIDTH * 20, 3)
+    assert image.shape == (FRAME_HEIGHT, FRAME_WIDTH, 3)
     assert image.dtype == np.uint8
 
 
-def test_only_the_label_is_drawn_over_the_thermal_image():
+def test_rendered_frame_maps_temperature_to_the_inferno_ramp_unannotated():
     temperatures = np.full((FRAME_HEIGHT, FRAME_WIDTH), 20.0, dtype=np.float32)
     hot_y, hot_x = 12, 16
     temperatures[hot_y, hot_x] = 45.0
 
     image = render_thermal_frame(temperatures)
 
-    white = np.all(image >= 250, axis=2)
-    center_y = hot_y * 20 + 10
-    center_x = hot_x * 20 + 10
-
-    # The label occupies the top-left corner only.
-    assert white[:48, :260].any()
-    assert not white[60:, :].any()
-    # No hot-spot marker is drawn over the frame any more.
-    assert not white[
-        center_y - 20 : center_y + 21,
-        center_x - 20 : center_x + 21,
-    ].any()
+    hottest = cv2.applyColorMap(
+        np.full((1, 1), 255, dtype=np.uint8), cv2.COLORMAP_INFERNO
+    )
+    cool = cv2.applyColorMap(
+        np.full((1, 1), round((20.0 - 15.0) / 30.0 * 255), dtype=np.uint8),
+        cv2.COLORMAP_INFERNO,
+    )
+    assert np.array_equal(image[hot_y, hot_x], hottest[0, 0])
+    assert np.array_equal(image[0, 0], cool[0, 0])
+    # Nothing is painted over the data: every pixel is a color map entry.
+    assert not np.all(image >= 250, axis=2).any()
 
 
 def test_liveness_does_not_access_camera_hardware():
@@ -582,3 +582,22 @@ def test_temperature_scale_runs_hot_at_the_top_in_the_feed_color_map():
     assert image.shape == (16, 4, 3)
     assert np.array_equal(image[0, 0], hottest[0, 0])
     assert np.array_equal(image[-1, 0], coldest[0, 0])
+
+
+def test_latest_frame_serves_the_grid_the_hover_readout_reads():
+    app = create_app(camera=FixedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    before = client.get("/latest_frame.json").get_json()
+    video_response = client.get("/video_feed", buffered=False)
+    next(video_response.response)
+    video_response.close()
+    after = client.get("/latest_frame.json").get_json()
+
+    assert before["temperatures"] is None
+    assert before["width"] == FRAME_WIDTH and before["height"] == FRAME_HEIGHT
+    assert len(after["temperatures"]) == FRAME_HEIGHT
+    assert all(len(row) == FRAME_WIDTH for row in after["temperatures"])
+    assert after["temperatures"][0][0] == pytest.approx(15.0, abs=0.05)
+    assert after["temperatures"][-1][-1] == pytest.approx(45.0, abs=0.05)

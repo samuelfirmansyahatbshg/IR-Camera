@@ -150,14 +150,12 @@ class Mlx90640Camera:
 
 
 def render_thermal_frame(temperatures: np.ndarray) -> np.ndarray:
-    """Render one 32 x 24 temperature frame with the inferno color map."""
+    """Color one 32 x 24 temperature frame; the browser does the scaling."""
     if temperatures.shape != (FRAME_HEIGHT, FRAME_WIDTH):
         raise ValueError(
             f"Expected a {FRAME_HEIGHT} x {FRAME_WIDTH} frame, "
             f"received {temperatures.shape}"
         )
-
-    hot_temperature = float(np.max(temperatures))
 
     normalized = np.clip(
         temperatures,
@@ -168,37 +166,7 @@ def render_thermal_frame(temperatures: np.ndarray) -> np.ndarray:
         MAX_TEMPERATURE_C - MIN_TEMPERATURE_C
     )
     grayscale = (normalized * 255).astype(np.uint8)
-    display_grayscale = cv2.resize(
-        grayscale,
-        (FRAME_WIDTH * DISPLAY_SCALE, FRAME_HEIGHT * DISPLAY_SCALE),
-        interpolation=cv2.INTER_CUBIC,
-    )
-    color_image = cv2.applyColorMap(display_grayscale, cv2.COLORMAP_INFERNO)
-
-    label = f"Hot: {hot_temperature:.1f} C"
-    label_origin = (12, 32)
-    cv2.putText(
-        color_image,
-        label,
-        label_origin,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (0, 0, 0),
-        4,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        color_image,
-        label,
-        label_origin,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-
-    return color_image
+    return cv2.applyColorMap(grayscale, cv2.COLORMAP_INFERNO)
 
 
 @dataclass(frozen=True)
@@ -261,6 +229,11 @@ class FrameBroadcaster:
             return None
         return (len(self._frame_times) - 1) / elapsed
 
+    def latest_temperatures(self) -> np.ndarray | None:
+        """The newest published temperature grid, or None before the first frame."""
+        with self._condition:
+            return self._latest_temperatures
+
     def camera_status(self) -> dict[str, object]:
         error = getattr(self._camera, "last_error", None)
         with self._condition:
@@ -268,11 +241,16 @@ class FrameBroadcaster:
             capture_running = self._capture_thread is not None
             viewers = self._subscriber_count
             fps = self._capture_fps()
+            temperatures = self._latest_temperatures
 
+        average_celsius = (
+            None if temperatures is None else round(float(temperatures.mean()), 1)
+        )
         status: dict[str, object] = {
             "viewers": viewers,
             "max_viewers": self._max_viewers,
             "fps": None if fps is None else round(fps, 1),
+            "average_celsius": average_celsius,
         }
         if error:
             status.update(
@@ -788,6 +766,89 @@ def create_app(camera: Camera | None = None) -> Flask:
                 height: 100%;
                 object-fit: contain;
               }
+              .pixel-readout {
+                position: absolute;
+                transform: translate(-50%, -140%);
+                padding: 4px 8px;
+                border: 1px solid #e5e7eb;
+                border-radius: 4px;
+                background: rgb(17 24 39 / 92%);
+                color: #f9fafb;
+                font-size: 0.8rem;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+                pointer-events: none;
+              }
+              .pixel-readout[hidden] {
+                display: none;
+              }
+              .measure-overlay {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+              }
+              .measure-overlay text {
+                font-family: system-ui, sans-serif;
+                font-size: 1.1px;
+                font-weight: 700;
+                fill: #f9fafb;
+                paint-order: stroke;
+                stroke: #111827;
+                stroke-width: 0.3px;
+              }
+              .measure {
+                margin-top: 16px;
+              }
+              .measure-tools {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                align-items: center;
+              }
+              .tool {
+                padding: 8px 14px;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                background: #0b1220;
+                color: #f9fafb;
+                font-weight: 700;
+                font-size: 0.9rem;
+                cursor: pointer;
+              }
+              .tool.is-active {
+                border-color: #38bdf8;
+                background: #082f49;
+              }
+              #measure-hint {
+                color: #9ca3af;
+                font-size: 0.85rem;
+              }
+              .measure-table {
+                margin-top: 12px;
+                border-collapse: collapse;
+                font-variant-numeric: tabular-nums;
+              }
+              .measure-table th,
+              .measure-table td {
+                padding: 6px 14px 6px 0;
+                text-align: left;
+                font-size: 0.9rem;
+              }
+              .measure-table th {
+                color: #9ca3af;
+                font-size: 0.75rem;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                font-weight: 600;
+              }
+              .measure-table td {
+                border-top: 1px solid #1f2937;
+              }
+              #camera-frame {
+                cursor: crosshair;
+              }
               .camera.is-offline img {
                 visibility: hidden;
               }
@@ -956,8 +1017,12 @@ def create_app(camera: Camera | None = None) -> Flask:
               <div class="layout">
                 <div class="feed">
                   <div id="camera-frame" class="camera">
-                    <img id="camera-image" src="video_feed" width="640" height="480"
+                    <img id="camera-image" src="video_feed" width="32" height="24"
                          alt="Live MLX90640 thermal camera feed">
+                    <svg id="measure-overlay" class="measure-overlay"
+                         viewBox="0 0 32 24" preserveAspectRatio="none"
+                         aria-hidden="true"></svg>
+                    <div id="pixel-readout" class="pixel-readout" hidden></div>
                     <div id="camera-offline" class="camera-offline" hidden>
                       <strong>CAMERA OFFLINE</strong>
                       <span id="camera-error">
@@ -987,8 +1052,46 @@ def create_app(camera: Camera | None = None) -> Flask:
                       ><span class="metric-unit">fps</span>
                     </div>
                   </div>
+                  <div class="metric">
+                    <div class="metric-label">Average</div>
+                    <div>
+                      <span id="average-value" class="metric-value">--</span
+                      ><span class="metric-unit">C</span>
+                    </div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-label">Cursor</div>
+                    <div>
+                      <span id="cursor-value" class="metric-value">--</span
+                      ><span class="metric-unit">C</span>
+                    </div>
+                  </div>
                 </aside>
               </div>
+              <section class="measure" aria-label="Measurement tools">
+                <div class="measure-tools">
+                  <button id="tool-point" type="button" class="tool is-active">Point</button>
+                  <button id="tool-line" type="button" class="tool">Line</button>
+                  <button id="tool-rect" type="button" class="tool">Rectangle</button>
+                  <button id="clear-measurements" type="button" class="tool">Clear</button>
+                  <span id="measure-hint">Click for a point; drag for a line or rectangle.</span>
+                </div>
+                <table class="measure-table">
+                  <thead>
+                    <tr>
+                      <th>Marker</th>
+                      <th>Min C</th>
+                      <th>Max C</th>
+                      <th>Avg C</th>
+                    </tr>
+                  </thead>
+                  <tbody id="measurement-rows">
+                    <tr id="measurement-empty">
+                      <td colspan="4">No markers yet.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
               <section class="recorder" aria-label="Data collection">
                 <fieldset>
                   <legend>Format</legend>
@@ -1015,6 +1118,9 @@ def create_app(camera: Camera | None = None) -> Flask:
               const image = document.getElementById("camera-image");
               let wasOffline = false;
               const fpsValue = document.getElementById("fps-value");
+              const averageValue = document.getElementById("average-value");
+              const cursorValue = document.getElementById("cursor-value");
+              const pixelReadout = document.getElementById("pixel-readout");
               const startButton = document.getElementById("start-recording");
               const stopButton = document.getElementById("stop-recording");
               const downloadButton =
@@ -1047,6 +1153,10 @@ def create_app(camera: Camera | None = None) -> Flask:
                   error.textContent = status.detail;
                   fpsValue.textContent =
                     status.fps === null ? "--" : status.fps.toFixed(1);
+                  averageValue.textContent =
+                    status.average_celsius === null
+                      ? "--"
+                      : status.average_celsius.toFixed(1);
                   // Viewer counts stay in the status payload for the server
                   // side viewer cap; the page no longer shows them.
                 } catch (requestError) {
@@ -1059,8 +1169,272 @@ def create_app(camera: Camera | None = None) -> Flask:
                   error.textContent =
                     "The application cannot report the MLX90640 status.";
                   fpsValue.textContent = "--";
+                  averageValue.textContent = "--";
                 }
               }
+
+              let temperatureGrid = null;
+              let cursorPosition = null;
+
+              async function refreshTemperatureGrid() {
+                try {
+                  const response = await fetch("latest_frame.json", {
+                    cache: "no-store",
+                  });
+                  if (!response.ok) {
+                    throw new Error(`frame request returned ${response.status}`);
+                  }
+                  const payload = await response.json();
+                  temperatureGrid = payload.temperatures;
+                } catch (requestError) {
+                  temperatureGrid = null;
+                }
+                updatePixelReadout();
+                renderMeasurements();
+              }
+
+              function updatePixelReadout() {
+                if (cursorPosition === null || temperatureGrid === null) {
+                  pixelReadout.hidden = true;
+                  cursorValue.textContent = "--";
+                  return;
+                }
+                const rows = temperatureGrid.length;
+                const columns = temperatureGrid[0].length;
+                const column = Math.min(
+                  columns - 1,
+                  Math.floor(cursorPosition.fx * columns)
+                );
+                const row = Math.min(
+                  rows - 1,
+                  Math.floor(cursorPosition.fy * rows)
+                );
+                const celsius = temperatureGrid[row][column];
+                cursorValue.textContent = celsius.toFixed(1);
+                pixelReadout.hidden = false;
+                pixelReadout.style.left = `${cursorPosition.x}px`;
+                pixelReadout.style.top = `${cursorPosition.y}px`;
+                pixelReadout.textContent =
+                  `${celsius.toFixed(1)} C  (x ${column}, y ${row})`;
+              }
+
+              image.addEventListener("mousemove", (event) => {
+                cursorPosition = positionFromEvent(event);
+                if (draft !== null) {
+                  draft.x2 = cursorPosition.sx;
+                  draft.y2 = cursorPosition.sy;
+                  renderOverlay();
+                }
+                updatePixelReadout();
+              });
+              image.addEventListener("mouseleave", () => {
+                cursorPosition = null;
+                updatePixelReadout();
+              });
+
+              // Measurement markers: P# points, L# lines, R# rectangles. All
+              // geometry is kept in sensor cell coordinates so the overlay and
+              // the statistics stay correct at any display size.
+              const overlay = document.getElementById("measure-overlay");
+              const measurementRows = document.getElementById("measurement-rows");
+              const toolButtons = {
+                point: document.getElementById("tool-point"),
+                line: document.getElementById("tool-line"),
+                rect: document.getElementById("tool-rect"),
+              };
+              const clearButton = document.getElementById("clear-measurements");
+              const markers = [];
+              const counters = { point: 0, line: 0, rect: 0 };
+              let activeTool = "point";
+              let draft = null;
+
+              function positionFromEvent(event) {
+                const bounds = image.getBoundingClientRect();
+                const x = event.clientX - bounds.left;
+                const y = event.clientY - bounds.top;
+                const fx = Math.min(0.999999, Math.max(0, x / bounds.width));
+                const fy = Math.min(0.999999, Math.max(0, y / bounds.height));
+                return { x, y, fx, fy, sx: fx * 32, sy: fy * 24 };
+              }
+
+              function cellAt(column, row) {
+                if (temperatureGrid === null) {
+                  return null;
+                }
+                const rows = temperatureGrid.length;
+                const columns = temperatureGrid[0].length;
+                const r = Math.min(rows - 1, Math.max(0, Math.floor(row)));
+                const c = Math.min(columns - 1, Math.max(0, Math.floor(column)));
+                return temperatureGrid[r][c];
+              }
+
+              function summarize(values) {
+                if (values.length === 0) {
+                  return null;
+                }
+                let min = values[0];
+                let max = values[0];
+                let total = 0;
+                for (const value of values) {
+                  min = Math.min(min, value);
+                  max = Math.max(max, value);
+                  total += value;
+                }
+                return { min, max, avg: total / values.length };
+              }
+
+              function markerValues(marker) {
+                if (temperatureGrid === null) {
+                  return null;
+                }
+                if (marker.kind === "point") {
+                  const value = cellAt(marker.x1, marker.y1);
+                  return value === null ? null : [value];
+                }
+                if (marker.kind === "line") {
+                  const dx = marker.x2 - marker.x1;
+                  const dy = marker.y2 - marker.y1;
+                  const steps = Math.max(2, Math.ceil(Math.hypot(dx, dy) * 2));
+                  const values = [];
+                  for (let step = 0; step <= steps; step += 1) {
+                    const t = step / steps;
+                    values.push(cellAt(marker.x1 + dx * t, marker.y1 + dy * t));
+                  }
+                  return values;
+                }
+                const left = Math.floor(Math.min(marker.x1, marker.x2));
+                const right = Math.floor(Math.max(marker.x1, marker.x2));
+                const top = Math.floor(Math.min(marker.y1, marker.y2));
+                const bottom = Math.floor(Math.max(marker.y1, marker.y2));
+                const values = [];
+                for (let row = top; row <= bottom; row += 1) {
+                  for (let column = left; column <= right; column += 1) {
+                    values.push(cellAt(column, row));
+                  }
+                }
+                return values;
+              }
+
+              function renderOverlay() {
+                const shapes = draft === null ? markers : markers.concat([draft]);
+                overlay.innerHTML = shapes
+                  .map((marker) => {
+                    const label = marker.id || "";
+                    if (marker.kind === "point") {
+                      return `<circle cx="${marker.x1}" cy="${marker.y1}" r="0.7"` +
+                        ` fill="none" stroke="#f9fafb" stroke-width="1.5"` +
+                        ` vector-effect="non-scaling-stroke"></circle>` +
+                        `<circle cx="${marker.x1}" cy="${marker.y1}" r="0.12"` +
+                        ` fill="#f9fafb"></circle>` +
+                        `<text x="${marker.x1 + 1}" y="${marker.y1 - 0.8}">${label}</text>`;
+                    }
+                    if (marker.kind === "line") {
+                      return `<line x1="${marker.x1}" y1="${marker.y1}"` +
+                        ` x2="${marker.x2}" y2="${marker.y2}" stroke="#f9fafb"` +
+                        ` stroke-width="1.5" vector-effect="non-scaling-stroke"></line>` +
+                        `<text x="${(marker.x1 + marker.x2) / 2 + 0.6}"` +
+                        ` y="${(marker.y1 + marker.y2) / 2 - 0.6}">${label}</text>`;
+                    }
+                    const x = Math.min(marker.x1, marker.x2);
+                    const y = Math.min(marker.y1, marker.y2);
+                    const width = Math.abs(marker.x2 - marker.x1);
+                    const height = Math.abs(marker.y2 - marker.y1);
+                    return `<rect x="${x}" y="${y}" width="${width}" height="${height}"` +
+                      ` fill="none" stroke="#f9fafb" stroke-width="1.5"` +
+                      ` vector-effect="non-scaling-stroke"></rect>` +
+                      `<text x="${x + 0.4}" y="${y - 0.6}">${label}</text>`;
+                  })
+                  .join("");
+              }
+
+              function renderMeasurements() {
+                if (markers.length === 0) {
+                  measurementRows.innerHTML =
+                    '<tr id="measurement-empty"><td colspan="4">No markers yet.</td></tr>';
+                  return;
+                }
+                measurementRows.innerHTML = markers
+                  .map((marker) => {
+                    const summary = summarize(markerValues(marker) || []);
+                    if (summary === null) {
+                      return `<tr><td>${marker.id}</td><td>--</td><td>--</td><td>--</td></tr>`;
+                    }
+                    return `<tr><td>${marker.id}</td>` +
+                      `<td>${summary.min.toFixed(1)}</td>` +
+                      `<td>${summary.max.toFixed(1)}</td>` +
+                      `<td>${summary.avg.toFixed(1)}</td></tr>`;
+                  })
+                  .join("");
+              }
+
+              function selectTool(tool) {
+                activeTool = tool;
+                Object.entries(toolButtons).forEach(([name, button]) => {
+                  button.classList.toggle("is-active", name === tool);
+                });
+              }
+
+              Object.entries(toolButtons).forEach(([name, button]) => {
+                button.addEventListener("click", () => selectTool(name));
+              });
+              clearButton.addEventListener("click", () => {
+                markers.length = 0;
+                counters.point = 0;
+                counters.line = 0;
+                counters.rect = 0;
+                draft = null;
+                renderOverlay();
+                renderMeasurements();
+              });
+
+              image.addEventListener("mousedown", (event) => {
+                event.preventDefault();
+                const position = positionFromEvent(event);
+                if (activeTool === "point") {
+                  counters.point += 1;
+                  markers.push({
+                    kind: "point",
+                    id: `P${counters.point}`,
+                    x1: position.sx,
+                    y1: position.sy,
+                  });
+                  renderOverlay();
+                  renderMeasurements();
+                  return;
+                }
+                draft = {
+                  kind: activeTool,
+                  id: "",
+                  x1: position.sx,
+                  y1: position.sy,
+                  x2: position.sx,
+                  y2: position.sy,
+                };
+              });
+
+              window.addEventListener("mouseup", () => {
+                if (draft === null) {
+                  return;
+                }
+                const pending = draft;
+                draft = null;
+                const spread = Math.hypot(
+                  pending.x2 - pending.x1,
+                  pending.y2 - pending.y1
+                );
+                if (spread >= 1) {
+                  if (pending.kind === "line") {
+                    counters.line += 1;
+                    pending.id = `L${counters.line}`;
+                  } else {
+                    counters.rect += 1;
+                    pending.id = `R${counters.rect}`;
+                  }
+                  markers.push(pending);
+                }
+                renderOverlay();
+                renderMeasurements();
+              });
 
               function selectedFormat() {
                 const checked = formatInputs.find((input) => input.checked);
@@ -1132,10 +1506,14 @@ def create_app(camera: Camera | None = None) -> Flask:
 
               refreshCameraStatus();
               refreshRecording();
+              refreshTemperatureGrid();
               window.setInterval(() => {
                 refreshCameraStatus();
                 refreshRecording();
               }, 1000);
+              // The sensor publishes at 2 Hz; poll the grid at the same rate so
+              // the hover readout follows the picture.
+              window.setInterval(refreshTemperatureGrid, 500);
             </script>
           </body>
         </html>
@@ -1155,6 +1533,20 @@ def create_app(camera: Camera | None = None) -> Flask:
     @app.get("/camera_status")
     def camera_status():
         return jsonify(stream.camera_status())
+
+    @app.get("/latest_frame.json")
+    def latest_frame():
+        """The newest temperature grid, for the page's per-pixel readout."""
+        temperatures = stream.latest_temperatures()
+        if temperatures is None:
+            return jsonify(width=FRAME_WIDTH, height=FRAME_HEIGHT, temperatures=None)
+        return jsonify(
+            width=FRAME_WIDTH,
+            height=FRAME_HEIGHT,
+            temperatures=[
+                [round(float(value), 1) for value in row] for row in temperatures
+            ],
+        )
 
     @app.get("/temperature_scale.png")
     def temperature_scale():

@@ -34,9 +34,9 @@ The web process uses one shared MLX90640 capture thread for all browser connecti
 
 The sensor starts at 2 Hz while frame reliability is being diagnosed. Each capture cycle makes at most three `getFrame` attempts, waits 100 ms between transient failures, and accepts `RuntimeError`, `ValueError`, and `OSError` as recoverable frame failures. After an exhausted cycle, the capture loop waits 500 ms before trying a new bounded cycle. Persistent failures therefore remain visible in logs without terminating the MJPEG response or creating a busy retry loop.
 
-The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the `Hot: NN.N C` label is drawn. The label is the only annotation: it reports the maximum temperature in the frame and nothing is painted over the thermal image itself.
+The MJPEG stream carries the sensor's native 32 x 24 frame: the server only maps temperatures to the inferno palette and nothing is drawn on top of the data. The browser scales the image to the display size, so no server-side interpolation or annotation can distort what the sensor measured.
 
-The browser polls `/camera_status` every second. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. The side panel shows the measured capture rate in frames per second; viewer counts stay in the `/camera_status` payload for the server-side viewer cap but are no longer displayed. A fixed color scale rendered by `/temperature_scale.png` sits beside the feed, mapping the inferno palette from `MAX_TEMPERATURE_C` (45 C, top) down to `MIN_TEMPERATURE_C` (15 C, bottom). `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
+The browser polls `/camera_status` every second. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. The side panel shows the measured capture rate, the frame average temperature (`average_celsius` in the status payload) and the temperature under the cursor; viewer counts stay in the payload for the server-side viewer cap but are no longer displayed. A fixed color scale rendered by `/temperature_scale.png` sits beside the feed, mapping the inferno palette from `MAX_TEMPERATURE_C` (45 C, top) down to `MIN_TEMPERATURE_C` (15 C, bottom). `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
 
 Gunicorn runs one worker with a fixed thread pool and every MJPEG response holds its thread until the viewer disconnects. `MAX_STREAM_VIEWERS` caps concurrent `/video_feed` subscribers so the page, the status poll and the health check always keep free threads; additional viewers receive `503` with an explanatory message instead of hanging the site.
 
@@ -62,6 +62,17 @@ curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 
 These commands only inspect logs, container configuration, the mapped device node, and HTTP health. They do not change I2C settings, permissions, containers, or host configuration.
 
+
+## Measuring temperatures in the page
+
+Hovering the feed shows the temperature of the pixel under the cursor, both as a tooltip on the image and in the `Cursor` tile. The markers below the feed work like a handheld thermal camera:
+
+- `Point` click places `P1`, `P2`, ... on one sensor cell.
+- `Line` drag places `L1`, `L2`, ... and samples every cell along the segment.
+- `Rectangle` drag places `R1`, `R2`, ... and covers every cell inside the region.
+- `Clear` removes all markers.
+
+The table lists each marker's minimum, maximum and average temperature and refreshes twice a second. Marker geometry is stored in sensor cell coordinates, so the overlay and the statistics stay correct at any window size. The page reads the grid from `GET /latest_frame.json`, which returns `{"width": 32, "height": 24, "temperatures": [[...]]}` with `temperatures` set to `null` before the first frame.
 
 ## Collecting data from the page
 
