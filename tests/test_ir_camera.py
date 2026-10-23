@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
+import json
 import logging
 import sys
 import threading
 import time
+import zipfile
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 
@@ -14,7 +18,10 @@ from ir_camera import (
     FRAME_WIDTH,
     FrameBroadcaster,
     Mlx90640Camera,
+    Recorder,
+    RecordingError,
     create_app,
+    render_temperature_scale,
     render_thermal_frame,
 )
 
@@ -64,6 +71,28 @@ class SharedFrameCamera:
 
         self.release_later_reads.wait(timeout=1)
         return None
+
+
+class PacedCamera:
+    """FixedCamera at a sane rate so recordings stay small in tests."""
+
+    def __init__(self, interval: float = 0.02) -> None:
+        self._interval = interval
+        self._offset = 0.0
+
+    def read_frame(self) -> np.ndarray:
+        time.sleep(self._interval)
+        self._offset += 0.1
+        return FixedCamera().read_frame() + self._offset
+
+
+def wait_for_recording(client, *, minimum_frames: int, timeout: float = 5.0):
+    deadline = time.monotonic() + timeout
+    status = client.get("/recording/status").get_json()
+    while status["frames"] < minimum_frames and time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = client.get("/recording/status").get_json()
+    return status
 
 
 def test_home_page_embeds_the_live_feed():
@@ -387,3 +416,170 @@ def test_repeated_viewers_share_one_camera_capture():
     for subscription in subscriptions:
         subscription.close()
     camera.release_later_reads.set()
+
+
+def test_recording_status_starts_idle():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+
+    payload = app.test_client().get("/recording/status").get_json()
+
+    assert payload["state"] == "idle"
+    assert payload["frames"] == 0
+    assert payload["session_id"] is None
+    assert payload["limit_reached"] is False
+
+
+def test_json_recording_downloads_timeframes_and_temperature_grids():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    started = client.post("/recording/start", json={"format": "json"})
+    status = wait_for_recording(client, minimum_frames=2)
+    client.post("/recording/stop")
+    download = client.get("/recording/download")
+
+    assert started.status_code == 200
+    assert started.get_json()["state"] == "recording"
+    assert status["frames"] >= 2
+    assert download.status_code == 200
+    assert download.mimetype == "application/json"
+    session_id = started.get_json()["session_id"]
+    assert download.headers["Content-Disposition"] == (
+        f'attachment; filename="ir-camera-{session_id}.json"'
+    )
+    payload = json.loads(download.get_data())
+    assert payload["frame_count"] == len(payload["frames"])
+    assert len(payload["timeframes"]) == payload["frame_count"]
+    assert payload["unit"] == "celsius"
+    for frame in payload["frames"]:
+        assert len(frame) == FRAME_HEIGHT
+        assert all(len(row) == FRAME_WIDTH for row in frame)
+        assert all(isinstance(value, float) for row in frame for value in row)
+    assert payload["frames"][0] != payload["frames"][-1]
+
+
+def test_image_recording_downloads_one_jpeg_per_timeframe():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    client.post("/recording/start", json={"format": "images"})
+    wait_for_recording(client, minimum_frames=2)
+    client.post("/recording/stop")
+    download = client.get("/recording/download")
+
+    assert download.mimetype == "application/zip"
+    assert download.headers["Content-Disposition"].endswith('.zip"')
+    archive = zipfile.ZipFile(io.BytesIO(download.get_data()))
+    names = archive.namelist()
+    jpegs = [name for name in names if name.endswith(".jpg")]
+    metadata = json.loads(archive.read("metadata.json"))
+    assert jpegs == [f"frame-{index:06d}.jpg" for index in range(1, len(jpegs) + 1)]
+    assert len(metadata["timeframes"]) == len(jpegs) == metadata["frame_count"]
+    assert archive.read(jpegs[0]).startswith(b"\xff\xd8")
+
+
+def test_recording_requests_that_do_not_match_the_state_report_conflicts():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    stop_while_idle = client.post("/recording/stop")
+    download_while_idle = client.get("/recording/download")
+    unknown_format = client.post("/recording/start", json={"format": "mp4"})
+    client.post("/recording/start", json={"format": "json"})
+    second_start = client.post("/recording/start", json={"format": "json"})
+    client.post("/recording/stop")
+
+    assert stop_while_idle.status_code == 409
+    assert stop_while_idle.get_json()["error"] == "No recording is running."
+    assert download_while_idle.status_code == 409
+    assert download_while_idle.get_json()["error"] == (
+        "No finished recording is available to download."
+    )
+    assert unknown_format.status_code == 409
+    assert unknown_format.get_json()["error"] == "Unknown format; use images or json."
+    assert second_start.status_code == 409
+    assert second_start.get_json()["error"] == "A recording is already running."
+
+
+def test_recording_stops_itself_at_the_frame_limit():
+    stream = FrameBroadcaster(PacedCamera())
+    recorder = Recorder(stream, max_frames=2)
+
+    recorder.start("json")
+    deadline = time.monotonic() + 5.0
+    status = recorder.status()
+    while status["state"] == "recording" and time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = recorder.status()
+
+    assert status["state"] == "ready"
+    assert status["frames"] == 2
+    assert status["limit_reached"] is True
+    payload, filename, mimetype = recorder.download()
+    assert json.loads(payload)["frame_count"] == 2
+    assert filename.endswith(".json")
+    assert mimetype == "application/json"
+
+
+def test_recording_waits_while_the_sensor_is_unresponsive():
+    camera = Mlx90640Camera(
+        sensor=ScriptedSensor([OSError("remote I/O error")]),
+        read_attempts=1,
+    )
+    stream = FrameBroadcaster(camera, failure_delay=0.01)
+    recorder = Recorder(stream, poll_timeout=0.05)
+
+    recorder.start("images")
+    time.sleep(0.3)
+    during = recorder.status()
+    after = recorder.stop()
+
+    assert during["state"] == "recording"
+    assert during["frames"] == 0
+    assert after["state"] == "ready"
+    assert after["frames"] == 0
+    with pytest.raises(RecordingError):
+        recorder.download()
+
+
+def test_home_page_offers_recording_controls_without_a_viewer_tile():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+
+    response = app.test_client().get("/")
+
+    assert b'id="start-recording"' in response.data
+    assert b'id="stop-recording"' in response.data
+    assert b'id="download-recording"' in response.data
+    assert b'name="capture-format"' in response.data
+    assert b'id="viewers-value"' not in response.data
+    assert b"Viewers" not in response.data
+
+
+def test_home_page_shows_the_temperature_scale_served_as_a_png():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    page = client.get("/")
+    scale = client.get("/temperature_scale.png")
+
+    assert b'src="temperature_scale.png"' in page.data
+    assert b"45 C" in page.data and b"15 C" in page.data
+    assert scale.status_code == 200
+    assert scale.mimetype == "image/png"
+    assert scale.get_data().startswith(b"\x89PNG")
+
+
+def test_temperature_scale_runs_hot_at_the_top_in_the_feed_color_map():
+    image = render_temperature_scale(width=4, height=16)
+
+    hottest = cv2.applyColorMap(np.full((1, 1), 255, dtype=np.uint8), cv2.COLORMAP_INFERNO)
+    coldest = cv2.applyColorMap(np.zeros((1, 1), dtype=np.uint8), cv2.COLORMAP_INFERNO)
+    assert image.shape == (16, 4, 3)
+    assert np.array_equal(image[0, 0], hottest[0, 0])
+    assert np.array_equal(image[-1, 0], coldest[0, 0])

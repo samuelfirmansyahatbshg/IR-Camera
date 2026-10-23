@@ -36,7 +36,7 @@ The sensor starts at 2 Hz while frame reliability is being diagnosed. Each captu
 
 The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the temperature label and hot-point ring are drawn. Annotations therefore remain readable and do not obscure the thermal image.
 
-The browser polls `/camera_status` every second. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. The side panel shows the measured capture rate in frames per second and the number of connected viewers. `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
+The browser polls `/camera_status` every second. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. The side panel shows the measured capture rate in frames per second; viewer counts stay in the `/camera_status` payload for the server-side viewer cap but are no longer displayed. A fixed color scale rendered by `/temperature_scale.png` sits beside the feed, mapping the inferno palette from `MAX_TEMPERATURE_C` (45 C, top) down to `MIN_TEMPERATURE_C` (15 C, bottom). `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
 
 Gunicorn runs one worker with a fixed thread pool and every MJPEG response holds its thread until the viewer disconnects. `MAX_STREAM_VIEWERS` caps concurrent `/video_feed` subscribers so the page, the status poll and the health check always keep free threads; additional viewers receive `503` with an explanatory message instead of hanging the site.
 
@@ -62,6 +62,17 @@ curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 
 These commands only inspect logs, container configuration, the mapped device node, and HTTP health. They do not change I2C settings, permissions, containers, or host configuration.
 
+
+## Collecting data from the page
+
+The page's `Start collecting` / `Stop collecting` buttons record the live stream in process memory; `Download` then returns the session to the browser. The format radio chooses the payload:
+
+- `Images (JPEG)` returns `ir-camera-<session>.zip` with `frame-000001.jpg` upward plus a `metadata.json` carrying `session_id`, `started_at`, `stopped_at`, `frame_count` and the per-frame `timeframes`.
+- `Numbers (JSON)` returns `ir-camera-<session>.json` with `timeframes` and `frames`, where `frames[i]` is the 24 x 32 Celsius grid captured at `timeframes[i]`.
+
+The recorder polls the shared capture loop through `FrameBroadcaster.latest_snapshot`, so it never opens a second sensor read path and never counts against `MAX_STREAM_VIEWERS`. Recording while the sensor is offline is allowed: the session stays open with zero frames and starts collecting as soon as frames return. `MAX_RECORDING_FRAMES` (2000, about 16 minutes at 2 Hz) bounds memory and ends the recording on its own. One recording exists at a time; starting a new one discards the previous frames, and a container restart loses an undownloaded session.
+
+The supporting routes are `POST /recording/start` (`{"format": "images" | "json"}`), `POST /recording/stop`, `GET /recording/status` and `GET /recording/download`. Requests that do not match the recorder state return `409` with an `error` message.
 
 ## CI pipeline
 
