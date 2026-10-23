@@ -19,12 +19,12 @@ ls -l /dev/i2c-1
 
 ## Runtime
 
-- `ir-camera-app`: prebuilt `ir-camera:arm64` image on host port 3000
-- `ir-camera-nginx`: separately managed Nginx container on host port 80
+- `ir-camera-app`: prebuilt `ir-camera:arm64` image, internal port 3000 only
+- `ir-camera-nginx`: separately managed Nginx container, the only service publishing a host port (80)
 - MLX90640 access: `/dev/i2c-1` passed to `ir-camera-app`
 - Public URL: `http://<raspberry-pi-address>/IR-Camera/`
 
-Camera files and downloaded image archives stay in `~/IR-Camera/`. The Nginx configuration remains outside this repository at `~/nginx/default.conf`.
+Camera files and downloaded image archives stay in `~/IR-Camera/`. The Nginx configuration remains outside this repository at `~/nginx/default.conf`. The containers share the external `web-proxy` Docker network; camera Compose service `app` has the unique network alias `ir-camera`, so Nginx uses `ir-camera:3000` instead of a host port. Nginx remains a standalone container, not part of the camera Compose project.
 
 The Raspberry Pi never builds the image and never installs Python, Debian, or Nginx packages. `compose.yaml` sets `pull_policy: never` and uses the fixed image tag `ir-camera:arm64`.
 
@@ -56,7 +56,7 @@ If failures continue, run these read-only diagnostics manually on the Raspberry 
 docker logs --tail 100 ir-camera-app
 docker inspect --format '{{json .HostConfig.Devices}}' ir-camera-app
 docker exec ir-camera-app ls -l /dev/i2c-1
-curl --noproxy "*" --fail http://localhost:3000/healthz
+docker exec ir-camera-app python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:3000/healthz", timeout=2).read().decode())'
 curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 ```
 
@@ -126,45 +126,89 @@ The separately managed Nginx configuration can still be transferred independentl
 ```powershell
 ssh user@server 'mkdir -p ~/nginx'
 scp .\nginx\default.conf user@server:~/nginx/default.conf
-ssh user@server 'docker restart ir-camera-nginx'
+ssh user@server 'docker exec ir-camera-nginx nginx -t && docker exec ir-camera-nginx nginx -s reload'
 ```
 
-Restarting the existing Nginx container reads the updated bind-mounted configuration. These commands do not install Nginx or pull an Nginx image.
+Validate and reload the existing Nginx container after copying its bind-mounted configuration. These commands do not install Nginx or pull an image. The configuration requires Nginx 1.27.3 or newer for open-source dynamic upstream DNS resolution; the deployed container was verified with 1.31.8. It uses Docker DNS (`127.0.0.11`) and a shared upstream zone to discover replacement camera containers without a reload. The trailing slash on `proxy_pass`, forwarded headers and unbuffered MJPEG settings are preserved.
 
 ## Deploy on the Raspberry Pi
 
-Before replacing a working image, save a local rollback archive:
+### One-time shared network setup
+
+Create the shared network before starting camera Compose, because it declares `web-proxy` as external:
 
 ```bash
-mkdir -p ~/IR-Camera/rollback
-docker image save ir-camera:arm64 | gzip > ~/IR-Camera/rollback/ir-camera-arm64-before-update.tar.gz
+docker network inspect web-proxy || docker network create web-proxy
 ```
 
-Load the CI image, validate the transferred Compose file, recreate the camera container, and wait for direct application health:
+For an existing standalone Nginx container, attach it once:
 
-```powershell
-ssh -i "$HOME\.ssh\pi_key" firmansyah@nbnlle0004.bsh.corp.bshg.com 'set -e; docker load -i ~/IR-Camera/ir-camera-arm64.tar.gz; cd ~/IR-Camera; docker compose config --quiet; docker compose up -d --no-build --pull never --force-recreate; for attempt in $(seq 1 30); do if curl --noproxy "*" --fail --silent --show-error http://localhost:3000/healthz; then break; fi; if [ "$attempt" -eq 30 ]; then docker logs --tail 100 ir-camera-app; exit 1; fi; sleep 2; done; docker compose ps'
+```bash
+docker network connect web-proxy ir-camera-nginx
 ```
 
-The transferred `compose.yaml` references `ir-camera:arm64`, matching the tag stored in the release archive. No additional image tag is required. `--noproxy "*"` prevents a host proxy from redirecting the local health request to a proxy such as `localhost:3128`.
+The attachment survives Nginx restarts. When creating or replacing Nginx, include the network in its launch command; do not use `host.docker.internal` or `--add-host`:
 
-Inspect the camera container after deployment:
-
-```powershell
-ssh -i "$HOME\.ssh\pi_key" firmansyah@nbnlle0004.bsh.corp.bshg.com 'docker logs --tail 50 ir-camera-app'
+```bash
+docker run -d --pull never \
+  --name ir-camera-nginx \
+  --restart unless-stopped \
+  --network web-proxy \
+  --publish 80:80 \
+  --mount type=bind,src="$HOME/nginx/default.conf",dst=/etc/nginx/conf.d/default.conf,readonly \
+  nginx:alpine
 ```
 
-The CI workflow verifies direct loading of the gzip-compressed Docker archive. If an older Docker Engine rejects compressed input, stream decompression without installing anything:
+Camera Compose joins the same network with alias `ir-camera` and exposes port 3000 internally without a host `ports` mapping. Other Compose projects can join this external network with their own unique aliases and also use internal port 3000; only add proxy routes for applications actually deployed.
+
+### Deploy a camera release
+
+Run on the Pi. Before replacing an image, save the current image and Compose configuration:
+
+```bash
+cd ~/IR-Camera
+mkdir -p rollback
+docker image save ir-camera:arm64 | gzip > rollback/ir-camera-arm64-before-update.tar.gz
+cp compose.yaml rollback/compose-before-update.yaml
+```
+
+After transferring the release image and matching Compose file, load the image and recreate the camera. No Nginx reload is needed when only the camera changes:
+
+```bash
+cd ~/IR-Camera
+docker load -i ir-camera-arm64.tar.gz
+docker compose config --quiet
+docker compose up -d --no-build --pull never --force-recreate
+for attempt in $(seq 1 30); do
+  if docker exec ir-camera-app python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:3000/healthz", timeout=2).read().decode())' \
+    && curl --noproxy "*" --fail --silent --show-error http://localhost/IR-Camera/healthz; then
+    break
+  fi
+  if [ "$attempt" -eq 30 ]; then
+    docker logs --tail 100 ir-camera-app
+    exit 1
+  fi
+  sleep 2
+done
+docker compose ps
+```
+
+The transferred `compose.yaml` references `ir-camera:arm64`, matching the image archive. Direct host requests to port 3000 no longer work by design. Use container-local health or the `/IR-Camera/healthz` proxy route. `--noproxy "*"` prevents a host proxy from intercepting localhost requests.
+
+Inspect the camera container and Docker service-name health after deployment:
+
+```bash
+docker logs --tail 50 ir-camera-app
+docker exec ir-camera-nginx wget -qO- http://ir-camera:3000/healthz
+docker port ir-camera-app
+```
+
+The final command should show no published ports. The CI workflow still uses a temporary localhost port mapping on its isolated runner to smoke-test the image; that is not the production Compose configuration.
+
+The CI workflow verifies loading the compressed Docker archive directly. If an older Docker Engine rejects compressed input, stream decompression without installing anything:
 
 ```bash
 gzip -dc ~/IR-Camera/ir-camera-arm64.tar.gz | docker load
-```
-
-Verify both the application and external Nginx route:
-
-```bash
-curl --noproxy "*" --fail http://localhost:3000/healthz
-curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 ```
 
 The camera opens when the first browser requests `/IR-Camera/video_feed`. Container logs report I2C or sensor initialization failures.
@@ -177,7 +221,7 @@ Keep previous successful GitHub Release images under `~/IR-Camera/rollback/`, wi
 docker load -i ~/IR-Camera/rollback/ir-camera-arm64-<release-tag>.tar.gz
 cd ~/IR-Camera
 docker compose up -d --no-build --pull never --force-recreate
-curl --noproxy "*" --fail http://localhost:3000/healthz
+docker exec ir-camera-app python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:3000/healthz", timeout=2).read().decode())'
 curl --noproxy "*" --fail http://localhost/IR-Camera/healthz
 ```
 
