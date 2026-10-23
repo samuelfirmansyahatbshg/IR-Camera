@@ -157,8 +157,7 @@ def render_thermal_frame(temperatures: np.ndarray) -> np.ndarray:
             f"received {temperatures.shape}"
         )
 
-    hot_y, hot_x = np.unravel_index(np.argmax(temperatures), temperatures.shape)
-    hot_temperature = float(temperatures[hot_y, hot_x])
+    hot_temperature = float(np.max(temperatures))
 
     normalized = np.clip(
         temperatures,
@@ -198,13 +197,6 @@ def render_thermal_frame(temperatures: np.ndarray) -> np.ndarray:
         2,
         cv2.LINE_AA,
     )
-
-    hot_center = (
-        int((hot_x + 0.5) * DISPLAY_SCALE),
-        int((hot_y + 0.5) * DISPLAY_SCALE),
-    )
-    cv2.circle(color_image, hot_center, 10, (0, 0, 0), 4, cv2.LINE_AA)
-    cv2.circle(color_image, hot_center, 10, (255, 255, 255), 2, cv2.LINE_AA)
 
     return color_image
 

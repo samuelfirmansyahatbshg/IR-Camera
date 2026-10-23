@@ -34,7 +34,7 @@ The web process uses one shared MLX90640 capture thread for all browser connecti
 
 The sensor starts at 2 Hz while frame reliability is being diagnosed. Each capture cycle makes at most three `getFrame` attempts, waits 100 ms between transient failures, and accepts `RuntimeError`, `ValueError`, and `OSError` as recoverable frame failures. After an exhausted cycle, the capture loop waits 500 ms before trying a new bounded cycle. Persistent failures therefore remain visible in logs without terminating the MJPEG response or creating a busy retry loop.
 
-The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the temperature label and hot-point ring are drawn. Annotations therefore remain readable and do not obscure the thermal image.
+The sensor's native 32 x 24 temperature field is interpolated to the 640 x 480 browser frame before the `Hot: NN.N C` label is drawn. The label is the only annotation: it reports the maximum temperature in the frame and nothing is painted over the thermal image itself.
 
 The browser polls `/camera_status` every second. If the MLX90640 reports an initialization or frame-read error, the page displays a red `CAMERA OFFLINE` banner and full-frame overlay with the latest diagnostic. The side panel shows the measured capture rate in frames per second; viewer counts stay in the `/camera_status` payload for the server-side viewer cap but are no longer displayed. A fixed color scale rendered by `/temperature_scale.png` sits beside the feed, mapping the inferno palette from `MAX_TEMPERATURE_C` (45 C, top) down to `MIN_TEMPERATURE_C` (15 C, bottom). `/healthz` remains an application liveness check and can stay healthy while the physical sensor is unavailable.
 
