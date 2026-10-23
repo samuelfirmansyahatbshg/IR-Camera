@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import zipfile
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import cv2
@@ -17,6 +18,7 @@ from ir_camera import (
     FRAME_HEIGHT,
     FRAME_WIDTH,
     FrameBroadcaster,
+    FrameSnapshot,
     Mlx90640Camera,
     Recorder,
     RecordingError,
@@ -601,3 +603,48 @@ def test_latest_frame_serves_the_grid_the_hover_readout_reads():
     assert all(len(row) == FRAME_WIDTH for row in after["temperatures"])
     assert after["temperatures"][0][0] == pytest.approx(15.0, abs=0.05)
     assert after["temperatures"][-1][-1] == pytest.approx(45.0, abs=0.05)
+
+
+def test_restarting_recording_does_not_import_a_previous_sessions_frame():
+    class HeldStream:
+        def __init__(self):
+            self.first_started = threading.Event()
+            self.second_started = threading.Event()
+            self.release_first = threading.Event()
+            self.release_second = threading.Event()
+            self.lock = threading.Lock()
+            self.calls = 0
+
+        def latest_snapshot(self, timeout):
+            with self.lock:
+                self.calls += 1
+                first = self.calls == 1
+            if first:
+                self.first_started.set()
+                assert self.release_first.wait(5)
+                return FrameSnapshot(
+                    1, datetime.now(timezone.utc), b"jpeg", FixedCamera().read_frame()
+                )
+            self.second_started.set()
+            self.release_second.wait(5)
+            return None
+
+    stream = HeldStream()
+    recorder = Recorder(stream, max_frames=1)
+    recorder.start("json")
+    old_worker = recorder._worker
+    try:
+        assert stream.first_started.wait(2)
+        recorder.stop()
+        recorder.start("json")
+        assert stream.second_started.wait(2)
+        stream.release_first.set()
+        old_worker.join(2)
+        status = recorder.status()
+        assert status["frames"] == 0
+        assert status["state"] == "recording"
+    finally:
+        if recorder.status()["state"] == "recording":
+            recorder.stop()
+        stream.release_first.set()
+        stream.release_second.set()

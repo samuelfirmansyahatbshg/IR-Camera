@@ -629,7 +629,10 @@ class Recorder:
         last_sequence: int | None = None
         while True:
             with self._lock:
-                if self._state != "recording":
+                if (
+                    self._state != "recording"
+                    or self._worker is not threading.current_thread()
+                ):
                     return
 
             # Reuses the shared capture loop, so recording never opens a second
@@ -645,7 +648,10 @@ class Recorder:
 
             last_sequence = snapshot.sequence
             with self._lock:
-                if self._state != "recording":
+                if (
+                    self._state != "recording"
+                    or self._worker is not threading.current_thread()
+                ):
                     return
                 self._frames.append(
                     RecordedFrame(
@@ -1294,11 +1300,38 @@ def create_app(camera: Camera | None = None) -> Flask:
                 if (marker.kind === "line") {
                   const dx = marker.x2 - marker.x1;
                   const dy = marker.y2 - marker.y1;
-                  const steps = Math.max(2, Math.ceil(Math.hypot(dx, dy) * 2));
+                  let column = Math.floor(marker.x1);
+                  let row = Math.floor(marker.y1);
+                  const endColumn = Math.floor(marker.x2);
+                  const endRow = Math.floor(marker.y2);
+                  const stepX = Math.sign(dx);
+                  const stepY = Math.sign(dy);
+                  const deltaX = dx === 0 ? Infinity : Math.abs(1 / dx);
+                  const deltaY = dy === 0 ? Infinity : Math.abs(1 / dy);
+                  let nextX = dx === 0 ? Infinity :
+                    ((stepX > 0 ? column + 1 : column) - marker.x1) / dx;
+                  let nextY = dy === 0 ? Infinity :
+                    ((stepY > 0 ? row + 1 : row) - marker.y1) / dy;
                   const values = [];
-                  for (let step = 0; step <= steps; step += 1) {
-                    const t = step / steps;
-                    values.push(cellAt(marker.x1 + dx * t, marker.y1 + dy * t));
+                  // Visit each crossed sensor cell once, so repeated samples
+                  // cannot bias the line's average temperature.
+                  while (true) {
+                    values.push(cellAt(column, row));
+                    if (column === endColumn && row === endRow) {
+                      break;
+                    }
+                    if (nextX + 1e-12 < nextY) {
+                      column += stepX;
+                      nextX += deltaX;
+                    } else if (nextY + 1e-12 < nextX) {
+                      row += stepY;
+                      nextY += deltaY;
+                    } else {
+                      column += stepX;
+                      row += stepY;
+                      nextX += deltaX;
+                      nextY += deltaY;
+                    }
                   }
                   return values;
                 }

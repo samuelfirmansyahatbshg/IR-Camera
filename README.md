@@ -68,7 +68,7 @@ These commands only inspect logs, container configuration, the mapped device nod
 Hovering the feed shows the temperature of the pixel under the cursor, both as a tooltip on the image and in the `Cursor` tile. The markers below the feed work like a handheld thermal camera:
 
 - `Point` click places `P1`, `P2`, ... on one sensor cell.
-- `Line` drag places `L1`, `L2`, ... and samples every cell along the segment.
+- `Line` drag places `L1`, `L2`, ... and samples each crossed sensor cell once, giving each cell equal weight in the average.
 - `Rectangle` drag places `R1`, `R2`, ... and covers every cell inside the region.
 - `Clear` removes all markers.
 
