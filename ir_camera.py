@@ -35,7 +35,7 @@ MAX_STREAM_VIEWERS = 4
 FPS_SAMPLE_FRAMES = 10
 # Longest a snapshot caller waits for the next published frame.
 SNAPSHOT_TIMEOUT_SECONDS = 6.0
-# Upper bound for one in-memory recording; ~16 minutes at the sensor's 2 Hz.
+# Upper bound for one in-memory recording; ~16 minutes at 2 full frames/s.
 MAX_RECORDING_FRAMES = 2000
 RECORDING_POLL_TIMEOUT_SECONDS = 2.0
 RECORDING_FORMATS = ("images", "json", "both")
@@ -86,12 +86,12 @@ class Mlx90640Camera:
         import busio
 
         self._logger.info(
-            "Initializing MLX90640 address=0x33, I2C frequency=800000 Hz, "
-            "refresh rate=2 Hz"
+            "Initializing MLX90640 address=0x33, requested I2C frequency=800000 Hz, "
+            "refresh rate=4 Hz (~2 full frames/s)"
         )
         i2c = busio.I2C(board.SCL, board.SDA, frequency=800_000)
         sensor = adafruit_mlx90640.MLX90640(i2c)
-        sensor.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_2_HZ
+        sensor.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_4_HZ
         self._sensor = sensor
         self._logger.info("MLX90640 initialization completed")
 
@@ -1510,7 +1510,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                 refreshCameraStatus();
                 refreshRecording();
               }, 1000);
-              // The sensor publishes at 2 Hz; poll the grid at the same rate so
+              // The sensor publishes about 2 full frames/s; poll at the same rate so
               // the hover readout follows the picture.
               window.setInterval(refreshTemperatureGrid, 500);
             </script>

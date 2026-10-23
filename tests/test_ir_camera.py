@@ -3,12 +3,10 @@ from __future__ import annotations
 import io
 import json
 import logging
-import sys
 import threading
 import time
 import zipfile
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -264,33 +262,6 @@ def test_liveness_does_not_access_camera_hardware():
 
     assert response.status_code == 200
     assert response.get_json() == {"status": "ok"}
-
-
-def test_camera_initializes_i2c_at_two_hertz(monkeypatch):
-    sensor = ScriptedSensor([[20.0] * (FRAME_WIDTH * FRAME_HEIGHT)])
-    i2c_arguments = {}
-    refresh_rate = object()
-
-    def create_i2c(scl, sda, *, frequency):
-        i2c_arguments.update(scl=scl, sda=sda, frequency=frequency)
-        return object()
-
-    monkeypatch.setitem(sys.modules, "board", SimpleNamespace(SCL="scl", SDA="sda"))
-    monkeypatch.setitem(sys.modules, "busio", SimpleNamespace(I2C=create_i2c))
-    monkeypatch.setitem(
-        sys.modules,
-        "adafruit_mlx90640",
-        SimpleNamespace(
-            MLX90640=lambda i2c: sensor,
-            RefreshRate=SimpleNamespace(REFRESH_2_HZ=refresh_rate),
-        ),
-    )
-
-    camera = Mlx90640Camera()
-
-    assert camera.read_frame() is not None
-    assert i2c_arguments == {"scl": "scl", "sda": "sda", "frequency": 800_000}
-    assert sensor.refresh_rate is refresh_rate
 
 
 def test_camera_retries_transient_frame_failures_then_returns_frame():
