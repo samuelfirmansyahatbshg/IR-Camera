@@ -38,6 +38,8 @@ SNAPSHOT_TIMEOUT_SECONDS = 6.0
 # Upper bound for one in-memory recording; ~16 minutes at 2 full frames/s.
 MAX_RECORDING_FRAMES = 2000
 RECORDING_POLL_TIMEOUT_SECONDS = 2.0
+# MLX90640 control-register encoding for 4 Hz, or about 2 complete frames/s.
+SENSOR_REFRESH_RATE = 0x03
 RECORDING_FORMATS = ("images", "json", "both")
 FRAME_READ_ERRORS = (RuntimeError, ValueError, OSError)
 LOGGER = logging.getLogger(__name__)
@@ -91,7 +93,7 @@ class Mlx90640Camera:
         )
         i2c = busio.I2C(board.SCL, board.SDA, frequency=800_000)
         sensor = adafruit_mlx90640.MLX90640(i2c)
-        sensor.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_4_HZ
+        sensor.refresh_rate = SENSOR_REFRESH_RATE
         self._sensor = sensor
         self._logger.info("MLX90640 initialization completed")
 
@@ -113,6 +115,15 @@ class Mlx90640Camera:
 
             for attempt in range(1, self._read_attempts + 1):
                 try:
+                    actual_rate = self._sensor.refresh_rate
+                    if actual_rate != SENSOR_REFRESH_RATE:
+                        self._logger.warning(
+                            "MLX90640 refresh register changed from %r to %r; "
+                            "restoring 4 Hz",
+                            SENSOR_REFRESH_RATE,
+                            actual_rate,
+                        )
+                        self._sensor.refresh_rate = SENSOR_REFRESH_RATE
                     self._sensor.getFrame(self._frame)
                 except FRAME_READ_ERRORS as error:
                     if attempt == self._read_attempts:

@@ -339,6 +339,7 @@ def test_camera_serializes_i2c_reads():
             self.active = 0
             self.maximum_active = 0
             self.state_lock = threading.Lock()
+            self.refresh_rate = None
 
         def getFrame(self, target):
             with self.state_lock:
@@ -633,3 +634,54 @@ def test_restarting_recording_does_not_import_a_previous_sessions_frame():
             recorder.stop()
         stream.release_first.set()
         stream.release_second.set()
+
+
+def test_camera_recovers_when_the_sensor_refresh_setting_changes():
+    class ResettableSensor(ScriptedSensor):
+        def __init__(self):
+            super().__init__([[20.0] * (FRAME_WIDTH * FRAME_HEIGHT)])
+            self.refresh_rate = 3
+            self.working_rate = None
+
+        def getFrame(self, target):
+            if self.working_rate is None:
+                self.working_rate = self.refresh_rate
+            if self.refresh_rate != self.working_rate:
+                raise RuntimeError("Sensor timing changed")
+            super().getFrame(target)
+
+    sensor = ResettableSensor()
+    camera = Mlx90640Camera(sensor=sensor, retry_delay=0)
+    assert np.all(camera.read_frame() == 20.0)
+
+    # Emulate the observed hardware reverting to its slower register setting.
+    sensor.refresh_rate = sensor.working_rate - 1
+    frame = camera.read_frame()
+
+    assert frame is not None
+    assert np.all(frame == 20.0)
+    assert camera.last_error is None
+
+
+@pytest.mark.parametrize("failure", ["read", "write"])
+def test_refresh_register_errors_remain_bounded_capture_failures(failure):
+    class UnavailableRateSensor:
+        @property
+        def refresh_rate(self):
+            if failure == "read":
+                raise OSError("Refresh register unavailable")
+            return 2
+
+        @refresh_rate.setter
+        def refresh_rate(self, value):
+            raise OSError("Refresh register unavailable")
+
+        def getFrame(self, target):
+            raise AssertionError("Must not capture after a register failure")
+
+    camera = Mlx90640Camera(
+        sensor=UnavailableRateSensor(), read_attempts=2, retry_delay=0
+    )
+
+    assert camera.read_frame() is None
+    assert camera.last_error == "OSError: Refresh register unavailable"
