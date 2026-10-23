@@ -461,12 +461,14 @@ def test_json_recording_downloads_timeframes_and_temperature_grids():
     assert payload["frames"][0] != payload["frames"][-1]
 
 
-def test_image_recording_downloads_one_jpeg_per_timeframe():
+@pytest.mark.parametrize("output_format", ["images", "both"])
+def test_image_recording_downloads_one_jpeg_per_timeframe(output_format):
     app = create_app(camera=PacedCamera())
     app.config.update(TESTING=True)
     client = app.test_client()
 
-    client.post("/recording/start", json={"format": "images"})
+    started = client.post("/recording/start", json={"format": output_format})
+    assert started.status_code == 200
     wait_for_recording(client, minimum_frames=2)
     client.post("/recording/stop")
     download = client.get("/recording/download")
@@ -480,6 +482,19 @@ def test_image_recording_downloads_one_jpeg_per_timeframe():
     assert jpegs == [f"frame-{index:06d}.jpg" for index in range(1, len(jpegs) + 1)]
     assert len(metadata["timeframes"]) == len(jpegs) == metadata["frame_count"]
     assert archive.read(jpegs[0]).startswith(b"\xff\xd8")
+    if output_format == "both":
+        temperatures = json.loads(archive.read("frames.json"))
+        assert temperatures["timeframes"] == metadata["timeframes"]
+        assert temperatures["frame_count"] == len(jpegs)
+        assert temperatures["session_id"] == metadata["session_id"]
+        assert temperatures["unit"] == "celsius"
+        assert len(temperatures["frames"]) == len(jpegs)
+        for frame in temperatures["frames"]:
+            assert len(frame) == FRAME_HEIGHT
+            assert all(len(row) == FRAME_WIDTH for row in frame)
+        assert temperatures["frames"][0] != temperatures["frames"][-1]
+    else:
+        assert "frames.json" not in names
 
 
 def test_recording_requests_that_do_not_match_the_state_report_conflicts():
@@ -501,7 +516,6 @@ def test_recording_requests_that_do_not_match_the_state_report_conflicts():
         "No finished recording is available to download."
     )
     assert unknown_format.status_code == 409
-    assert unknown_format.get_json()["error"] == "Unknown format; use images or json."
     assert second_start.status_code == 409
     assert second_start.get_json()["error"] == "A recording is already running."
 

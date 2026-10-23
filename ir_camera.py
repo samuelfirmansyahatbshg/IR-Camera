@@ -38,7 +38,7 @@ SNAPSHOT_TIMEOUT_SECONDS = 6.0
 # Upper bound for one in-memory recording; ~16 minutes at the sensor's 2 Hz.
 MAX_RECORDING_FRAMES = 2000
 RECORDING_POLL_TIMEOUT_SECONDS = 2.0
-RECORDING_FORMATS = ("images", "json")
+RECORDING_FORMATS = ("images", "json", "both")
 FRAME_READ_ERRORS = (RuntimeError, ValueError, OSError)
 LOGGER = logging.getLogger(__name__)
 
@@ -495,7 +495,7 @@ class Recorder:
     def start(self, output_format: str) -> dict[str, object]:
         """Begin a new recording, discarding any previously collected frames."""
         if output_format not in RECORDING_FORMATS:
-            raise RecordingError("Unknown format; use images or json.")
+            raise RecordingError("Unknown format; use images, json or both.")
 
         with self._lock:
             if self._state == "recording":
@@ -554,7 +554,7 @@ class Recorder:
             stopped_at = self._stopped_at
 
         timeframes = [frame.captured_at.isoformat() for frame in frames]
-        if output_format == "json":
+        if output_format in ("json", "both"):
             payload = {
                 "session_id": session_id,
                 "format": output_format,
@@ -573,11 +573,13 @@ class Recorder:
                     for frame in frames
                 ],
             }
-            return (
-                json.dumps(payload).encode("utf-8"),
-                f"ir-camera-{session_id}.json",
-                "application/json",
-            )
+            json_payload = json.dumps(payload).encode("utf-8")
+            if output_format == "json":
+                return (
+                    json_payload,
+                    f"ir-camera-{session_id}.json",
+                    "application/json",
+                )
 
         buffer = io.BytesIO()
         # JPEG payloads are already compressed, so storing them is faster and
@@ -589,6 +591,8 @@ class Recorder:
         ) as archive:
             for index, frame in enumerate(frames, start=1):
                 archive.writestr(f"frame-{index:06d}.jpg", frame.jpeg)
+            if output_format == "both":
+                archive.writestr("frames.json", json_payload)
             archive.writestr(
                 "metadata.json",
                 json.dumps(
@@ -609,10 +613,11 @@ class Recorder:
         )
 
     def _status_locked(self) -> dict[str, object]:
-        if self._format == "json":
-            size = sum(frame.temperatures.nbytes for frame in self._frames)
-        else:
-            size = sum(len(frame.jpeg) for frame in self._frames)
+        size = 0
+        if self._format in ("json", "both"):
+            size += sum(frame.temperatures.nbytes for frame in self._frames)
+        if self._format in ("images", "both"):
+            size += sum(len(frame.jpeg) for frame in self._frames)
         return {
             "state": self._state,
             "session_id": self._session_id,
@@ -964,6 +969,9 @@ def create_app(camera: Camera | None = None) -> Flask:
               }
               .recorder fieldset {
                 display: flex;
+                flex-wrap: wrap;
+                flex-basis: 100%;
+                min-width: 0;
                 gap: 12px;
                 align-items: center;
                 margin: 0;
@@ -1059,6 +1067,13 @@ def create_app(camera: Camera | None = None) -> Flask:
                     </div>
                   </div>
                   <div class="metric">
+                    <div class="metric-label">Resolution</div>
+                    <div>
+                      <span class="metric-value">32 × 24</span
+                      ><span class="metric-unit">px</span>
+                    </div>
+                  </div>
+                  <div class="metric">
                     <div class="metric-label">Average</div>
                     <div>
                       <span id="average-value" class="metric-value">--</span
@@ -1077,10 +1092,9 @@ def create_app(camera: Camera | None = None) -> Flask:
               <section class="measure" aria-label="Measurement tools">
                 <div class="measure-tools">
                   <button id="tool-point" type="button" class="tool is-active">Point</button>
-                  <button id="tool-line" type="button" class="tool">Line</button>
                   <button id="tool-rect" type="button" class="tool">Rectangle</button>
                   <button id="clear-measurements" type="button" class="tool">Clear</button>
-                  <span id="measure-hint">Click for a point; drag for a line or rectangle.</span>
+                  <span id="measure-hint">Click for a point; drag for a rectangle.</span>
                 </div>
                 <table class="measure-table">
                   <thead>
@@ -1108,6 +1122,10 @@ def create_app(camera: Camera | None = None) -> Flask:
                   <label>
                     <input type="radio" name="capture-format" value="json">
                     Numbers (JSON)
+                  </label>
+                  <label>
+                    <input type="radio" name="capture-format" value="both">
+                    Both (JPEG + JSON)
                   </label>
                 </fieldset>
                 <button id="start-recording" type="button">Start collecting</button>
@@ -1238,19 +1256,18 @@ def create_app(camera: Camera | None = None) -> Flask:
                 updatePixelReadout();
               });
 
-              // Measurement markers: P# points, L# lines, R# rectangles. All
+              // Measurement markers: P# points and R# rectangles. All
               // geometry is kept in sensor cell coordinates so the overlay and
               // the statistics stay correct at any display size.
               const overlay = document.getElementById("measure-overlay");
               const measurementRows = document.getElementById("measurement-rows");
               const toolButtons = {
                 point: document.getElementById("tool-point"),
-                line: document.getElementById("tool-line"),
                 rect: document.getElementById("tool-rect"),
               };
               const clearButton = document.getElementById("clear-measurements");
               const markers = [];
-              const counters = { point: 0, line: 0, rect: 0 };
+              const counters = { point: 0, rect: 0 };
               let activeTool = "point";
               let draft = null;
 
@@ -1297,44 +1314,6 @@ def create_app(camera: Camera | None = None) -> Flask:
                   const value = cellAt(marker.x1, marker.y1);
                   return value === null ? null : [value];
                 }
-                if (marker.kind === "line") {
-                  const dx = marker.x2 - marker.x1;
-                  const dy = marker.y2 - marker.y1;
-                  let column = Math.floor(marker.x1);
-                  let row = Math.floor(marker.y1);
-                  const endColumn = Math.floor(marker.x2);
-                  const endRow = Math.floor(marker.y2);
-                  const stepX = Math.sign(dx);
-                  const stepY = Math.sign(dy);
-                  const deltaX = dx === 0 ? Infinity : Math.abs(1 / dx);
-                  const deltaY = dy === 0 ? Infinity : Math.abs(1 / dy);
-                  let nextX = dx === 0 ? Infinity :
-                    ((stepX > 0 ? column + 1 : column) - marker.x1) / dx;
-                  let nextY = dy === 0 ? Infinity :
-                    ((stepY > 0 ? row + 1 : row) - marker.y1) / dy;
-                  const values = [];
-                  // Visit each crossed sensor cell once, so repeated samples
-                  // cannot bias the line's average temperature.
-                  while (true) {
-                    values.push(cellAt(column, row));
-                    if (column === endColumn && row === endRow) {
-                      break;
-                    }
-                    if (nextX + 1e-12 < nextY) {
-                      column += stepX;
-                      nextX += deltaX;
-                    } else if (nextY + 1e-12 < nextX) {
-                      row += stepY;
-                      nextY += deltaY;
-                    } else {
-                      column += stepX;
-                      row += stepY;
-                      nextX += deltaX;
-                      nextY += deltaY;
-                    }
-                  }
-                  return values;
-                }
                 const left = Math.floor(Math.min(marker.x1, marker.x2));
                 const right = Math.floor(Math.max(marker.x1, marker.x2));
                 const top = Math.floor(Math.min(marker.y1, marker.y2));
@@ -1360,13 +1339,6 @@ def create_app(camera: Camera | None = None) -> Flask:
                         `<circle cx="${marker.x1}" cy="${marker.y1}" r="0.12"` +
                         ` fill="#f9fafb"></circle>` +
                         `<text x="${marker.x1 + 1}" y="${marker.y1 - 0.8}">${label}</text>`;
-                    }
-                    if (marker.kind === "line") {
-                      return `<line x1="${marker.x1}" y1="${marker.y1}"` +
-                        ` x2="${marker.x2}" y2="${marker.y2}" stroke="#f9fafb"` +
-                        ` stroke-width="1.5" vector-effect="non-scaling-stroke"></line>` +
-                        `<text x="${(marker.x1 + marker.x2) / 2 + 0.6}"` +
-                        ` y="${(marker.y1 + marker.y2) / 2 - 0.6}">${label}</text>`;
                     }
                     const x = Math.min(marker.x1, marker.x2);
                     const y = Math.min(marker.y1, marker.y2);
@@ -1413,7 +1385,6 @@ def create_app(camera: Camera | None = None) -> Flask:
               clearButton.addEventListener("click", () => {
                 markers.length = 0;
                 counters.point = 0;
-                counters.line = 0;
                 counters.rect = 0;
                 draft = null;
                 renderOverlay();
@@ -1456,13 +1427,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                   pending.y2 - pending.y1
                 );
                 if (spread >= 1) {
-                  if (pending.kind === "line") {
-                    counters.line += 1;
-                    pending.id = `L${counters.line}`;
-                  } else {
-                    counters.rect += 1;
-                    pending.id = `R${counters.rect}`;
-                  }
+                  counters.rect += 1;
+                  pending.id = `R${counters.rect}`;
                   markers.push(pending);
                 }
                 renderOverlay();

@@ -68,7 +68,6 @@ These commands only inspect logs, container configuration, the mapped device nod
 Hovering the feed shows the temperature of the pixel under the cursor, both as a tooltip on the image and in the `Cursor` tile. The markers below the feed work like a handheld thermal camera:
 
 - `Point` click places `P1`, `P2`, ... on one sensor cell.
-- `Line` drag places `L1`, `L2`, ... and samples each crossed sensor cell once, giving each cell equal weight in the average.
 - `Rectangle` drag places `R1`, `R2`, ... and covers every cell inside the region.
 - `Clear` removes all markers.
 
@@ -80,10 +79,11 @@ The page's `Start collecting` / `Stop collecting` buttons record the live stream
 
 - `Images (JPEG)` returns `ir-camera-<session>.zip` with `frame-000001.jpg` upward plus a `metadata.json` carrying `session_id`, `started_at`, `stopped_at`, `frame_count` and the per-frame `timeframes`.
 - `Numbers (JSON)` returns `ir-camera-<session>.json` with `timeframes` and `frames`, where `frames[i]` is the 24 x 32 Celsius grid captured at `timeframes[i]`.
+- `Both (JPEG + JSON)` returns one `ir-camera-<session>.zip` containing the JPEGs, `metadata.json` and `frames.json`. The JSON includes the same temperature grids as Numbers mode, with one timestamp and one grid for every JPEG in the archive.
 
 The recorder polls the shared capture loop through `FrameBroadcaster.latest_snapshot`, so it never opens a second sensor read path and never counts against `MAX_STREAM_VIEWERS`. Recording while the sensor is offline is allowed: the session stays open with zero frames and starts collecting as soon as frames return. `MAX_RECORDING_FRAMES` (2000, about 16 minutes at 2 Hz) bounds memory and ends the recording on its own. One recording exists at a time; starting a new one discards the previous frames, and a container restart loses an undownloaded session.
 
-The supporting routes are `POST /recording/start` (`{"format": "images" | "json"}`), `POST /recording/stop`, `GET /recording/status` and `GET /recording/download`. Requests that do not match the recorder state return `409` with an `error` message.
+The supporting routes are `POST /recording/start` (`{"format": "images" | "json" | "both"}`), `POST /recording/stop`, `GET /recording/status` and `GET /recording/download`. Requests that do not match the recorder state return `409` with an `error` message. The `Resolution` tile beside the feed shows the native 32 x 24 sensor resolution; exports are not upscaled.
 
 ## CI pipeline
 
