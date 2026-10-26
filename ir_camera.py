@@ -1232,6 +1232,13 @@ def create_app(camera: Camera | None = None) -> Flask:
                 scaleTicks.innerHTML = labels.join("");
               }
 
+              let averageCelsius = null;
+
+              function renderAverage() {
+                averageValue.textContent =
+                  averageCelsius === null ? "--" : formatTemperature(averageCelsius);
+              }
+
               function applyUnit() {
                 window.localStorage.setItem(
                   "ir-camera-unit",
@@ -1242,9 +1249,13 @@ def create_app(camera: Camera | None = None) -> Flask:
                   label.textContent = unitSymbol();
                 });
                 renderScaleTicks();
-                refreshCameraStatus();
+                // Re-render the cached Celsius average immediately; waiting for
+                // the next status poll would briefly show a Celsius number
+                // under the new unit label.
+                renderAverage();
                 updatePixelReadout();
                 renderMeasurements();
+                refreshCameraStatus();
               }
 
               unitButton.addEventListener("click", () => {
@@ -1276,10 +1287,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                   error.textContent = status.detail;
                   fpsValue.textContent =
                     status.fps === null ? "--" : status.fps.toFixed(1);
-                  averageValue.textContent =
-                    status.average_celsius === null
-                      ? "--"
-                      : formatTemperature(status.average_celsius);
+                  averageCelsius = status.average_celsius;
+                  renderAverage();
                   // Viewer counts stay in the status payload for the server
                   // side viewer cap; the page no longer shows them.
                 } catch (requestError) {
@@ -1292,7 +1301,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                   error.textContent =
                     "The application cannot report the MLX90640 status.";
                   fpsValue.textContent = "--";
-                  averageValue.textContent = "--";
+                  averageCelsius = null;
+                  renderAverage();
                 }
               }
 
