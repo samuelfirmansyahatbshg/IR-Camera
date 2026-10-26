@@ -92,6 +92,25 @@ The recorder polls the shared capture loop through `FrameBroadcaster.latest_snap
 
 The supporting routes are `POST /recording/start` (`{"format": "images" | "json" | "both"}`), `POST /recording/stop`, `GET /recording/status` and `GET /recording/download`. Requests that do not match the recorder state return `409` with an `error` message. The `Resolution` tile beside the feed shows the native 32 x 24 sensor resolution; exports are not upscaled.
 
+## Collecting data from the command line
+
+`tools/irctl.py` drives the same recording routes as the page. It uses only the standard library, so it runs on any machine with Python 3.12 and on the Raspberry Pi itself. Every request bypasses proxies, which the corporate proxy would otherwise hijack.
+
+```bash
+python tools/irctl.py status
+python tools/irctl.py start --format both
+python tools/irctl.py stop
+python tools/irctl.py save -o "$HOME/Downloads"
+```
+
+`record` runs the whole cycle and writes the file when it finishes:
+
+```bash
+python tools/irctl.py record --duration 60 --format both -o "$HOME/Downloads"
+```
+
+`save` and `record` accept a file or a directory for `-o`; a directory keeps the server's `ir-camera-<session>.<ext>` name, and the default is that name in the working directory. The camera URL defaults to `http://nbnlle0004.bsh.corp.bshg.com/IR-Camera/` and can be changed with `--url` or the `IR_CAMERA_URL` environment variable. Requests the recorder refuses, such as stopping when nothing is running, print the server's message and exit with status `1`.
+
 ## CI pipeline
 
 `.github/workflows/build.yml` runs for pushes to `main`, version tags matching `v*`, and manual dispatches. It:
