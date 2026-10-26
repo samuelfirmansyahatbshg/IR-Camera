@@ -868,6 +868,26 @@ def create_app(camera: Camera | None = None) -> Flask:
               .measure-table td {
                 border-top: 1px solid #1f2937;
               }
+              .template-picker {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                font-size: 0.75rem;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: #9ca3af;
+              }
+              .template-picker select {
+                padding: 8px 10px;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                background: #0b1220;
+                color: #f9fafb;
+                font-size: 0.85rem;
+                letter-spacing: normal;
+                text-transform: none;
+                cursor: pointer;
+              }
               #camera-frame {
                 cursor: crosshair;
               }
@@ -1057,16 +1077,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                   </div>
                   <figure class="scale">
                     <img src="temperature_scale.png" width="22" height="480"
-                         alt="Inferno color scale from 45 to 15 degrees Celsius">
-                    <figcaption class="scale-ticks">
-                      <span>45 C</span>
-                      <span>40</span>
-                      <span>35</span>
-                      <span>30</span>
-                      <span>25</span>
-                      <span>20</span>
-                      <span>15 C</span>
-                    </figcaption>
+                         alt="Inferno color scale from the hottest to the coldest displayed temperature">
+                    <figcaption id="scale-ticks" class="scale-ticks"></figcaption>
                   </figure>
                 </div>
                 <aside class="metrics" aria-label="Stream metrics">
@@ -1088,14 +1100,14 @@ def create_app(camera: Camera | None = None) -> Flask:
                     <div class="metric-label">Average</div>
                     <div>
                       <span id="average-value" class="metric-value">--</span
-                      ><span class="metric-unit">C</span>
+                      ><span class="metric-unit unit-label">C</span>
                     </div>
                   </div>
                   <div class="metric">
                     <div class="metric-label">Cursor</div>
                     <div>
                       <span id="cursor-value" class="metric-value">--</span
-                      ><span class="metric-unit">C</span>
+                      ><span class="metric-unit unit-label">C</span>
                     </div>
                   </div>
                 </aside>
@@ -1104,16 +1116,30 @@ def create_app(camera: Camera | None = None) -> Flask:
                 <div class="measure-tools">
                   <button id="tool-point" type="button" class="tool is-active">Point</button>
                   <button id="tool-rect" type="button" class="tool">Rectangle</button>
+                  <button id="tool-circle" type="button" class="tool">Circle</button>
                   <button id="clear-measurements" type="button" class="tool">Clear</button>
-                  <span id="measure-hint">Click for a point; drag for a rectangle.</span>
+                  <button id="toggle-unit" type="button" class="tool">Show F</button>
+                  <label class="template-picker">
+                    Template
+                    <select id="template-select">
+                      <option value="">Choose a layout</option>
+                      <option value="columns-5">5 columns (trays)</option>
+                      <option value="columns-3">3 columns</option>
+                      <option value="grid-2x2">2 x 2 grid</option>
+                      <option value="grid-3x3">3 x 3 grid</option>
+                      <option value="circles-4">4 circles</option>
+                      <option value="circle-center">Center circle</option>
+                    </select>
+                  </label>
+                  <span id="measure-hint">Click for a point; drag for a rectangle or circle.</span>
                 </div>
                 <table class="measure-table">
                   <thead>
                     <tr>
                       <th>Marker</th>
-                      <th>Min C</th>
-                      <th>Max C</th>
-                      <th>Avg C</th>
+                      <th>Min <span class="unit-label">C</span></th>
+                      <th>Max <span class="unit-label">C</span></th>
+                      <th>Avg <span class="unit-label">C</span></th>
                     </tr>
                   </thead>
                   <tbody id="measurement-rows">
@@ -1164,6 +1190,68 @@ def create_app(camera: Camera | None = None) -> Flask:
               const formatInputs = Array.from(
                 document.querySelectorAll('input[name="capture-format"]')
               );
+              const unitButton = document.getElementById("toggle-unit");
+              const unitLabels = Array.from(
+                document.querySelectorAll(".unit-label")
+              );
+              const scaleTicks = document.getElementById("scale-ticks");
+              const templateSelect = document.getElementById("template-select");
+              const MIN_SCALE_CELSIUS = 15;
+              const MAX_SCALE_CELSIUS = 45;
+
+              // The sensor and every download stay in Celsius; the unit choice
+              // only changes what this page displays.
+              let showFahrenheit =
+                window.localStorage.getItem("ir-camera-unit") === "F";
+
+              function toDisplay(celsius) {
+                return showFahrenheit ? celsius * 9 / 5 + 32 : celsius;
+              }
+
+              function formatTemperature(celsius) {
+                return toDisplay(celsius).toFixed(1);
+              }
+
+              function unitSymbol() {
+                return showFahrenheit ? "F" : "C";
+              }
+
+              function renderScaleTicks() {
+                const steps = 6;
+                const labels = [];
+                for (let step = 0; step <= steps; step += 1) {
+                  const celsius =
+                    MAX_SCALE_CELSIUS -
+                    (step * (MAX_SCALE_CELSIUS - MIN_SCALE_CELSIUS)) / steps;
+                  const value = Math.round(toDisplay(celsius));
+                  const edge = step === 0 || step === steps;
+                  labels.push(
+                    `<span>${value}${edge ? " " + unitSymbol() : ""}</span>`
+                  );
+                }
+                scaleTicks.innerHTML = labels.join("");
+              }
+
+              function applyUnit() {
+                window.localStorage.setItem(
+                  "ir-camera-unit",
+                  showFahrenheit ? "F" : "C"
+                );
+                unitButton.textContent = showFahrenheit ? "Show C" : "Show F";
+                unitLabels.forEach((label) => {
+                  label.textContent = unitSymbol();
+                });
+                renderScaleTicks();
+                refreshCameraStatus();
+                updatePixelReadout();
+                renderMeasurements();
+              }
+
+              unitButton.addEventListener("click", () => {
+                showFahrenheit = !showFahrenheit;
+                applyUnit();
+              });
+
 
               async function refreshCameraStatus() {
                 try {
@@ -1191,7 +1279,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                   averageValue.textContent =
                     status.average_celsius === null
                       ? "--"
-                      : status.average_celsius.toFixed(1);
+                      : formatTemperature(status.average_celsius);
                   // Viewer counts stay in the status payload for the server
                   // side viewer cap; the page no longer shows them.
                 } catch (requestError) {
@@ -1245,12 +1333,13 @@ def create_app(camera: Camera | None = None) -> Flask:
                   Math.floor(cursorPosition.fy * rows)
                 );
                 const celsius = temperatureGrid[row][column];
-                cursorValue.textContent = celsius.toFixed(1);
+                cursorValue.textContent = formatTemperature(celsius);
                 pixelReadout.hidden = false;
                 pixelReadout.style.left = `${cursorPosition.x}px`;
                 pixelReadout.style.top = `${cursorPosition.y}px`;
                 pixelReadout.textContent =
-                  `${celsius.toFixed(1)} C  (x ${column}, y ${row})`;
+                  `${formatTemperature(celsius)} ${unitSymbol()}` +
+                  `  (x ${column}, y ${row})`;
               }
 
               image.addEventListener("mousemove", (event) => {
@@ -1267,18 +1356,19 @@ def create_app(camera: Camera | None = None) -> Flask:
                 updatePixelReadout();
               });
 
-              // Measurement markers: P# points and R# rectangles. All
-              // geometry is kept in sensor cell coordinates so the overlay and
-              // the statistics stay correct at any display size.
+              // Measurement markers: P# points, R# rectangles and C# circles.
+              // All geometry is kept in sensor cell coordinates so the overlay
+              // and the statistics stay correct at any display size.
               const overlay = document.getElementById("measure-overlay");
               const measurementRows = document.getElementById("measurement-rows");
               const toolButtons = {
                 point: document.getElementById("tool-point"),
                 rect: document.getElementById("tool-rect"),
+                circle: document.getElementById("tool-circle"),
               };
               const clearButton = document.getElementById("clear-measurements");
               const markers = [];
-              const counters = { point: 0, rect: 0 };
+              const counters = { point: 0, rect: 0, circle: 0 };
               let activeTool = "point";
               let draft = null;
 
@@ -1325,6 +1415,31 @@ def create_app(camera: Camera | None = None) -> Flask:
                   const value = cellAt(marker.x1, marker.y1);
                   return value === null ? null : [value];
                 }
+                if (marker.kind === "circle") {
+                  const radius = Math.hypot(
+                    marker.x2 - marker.x1,
+                    marker.y2 - marker.y1
+                  );
+                  const values = [];
+                  const left = Math.floor(marker.x1 - radius);
+                  const right = Math.ceil(marker.x1 + radius);
+                  const top = Math.floor(marker.y1 - radius);
+                  const bottom = Math.ceil(marker.y1 + radius);
+                  for (let row = top; row <= bottom; row += 1) {
+                    for (let column = left; column <= right; column += 1) {
+                      // Compare cell centres so a circle covers the cells it
+                      // visually encloses.
+                      const dx = column + 0.5 - marker.x1;
+                      const dy = row + 0.5 - marker.y1;
+                      if (Math.hypot(dx, dy) <= radius) {
+                        values.push(cellAt(column, row));
+                      }
+                    }
+                  }
+                  return values.length > 0
+                    ? values
+                    : [cellAt(marker.x1, marker.y1)];
+                }
                 const left = Math.floor(Math.min(marker.x1, marker.x2));
                 const right = Math.floor(Math.max(marker.x1, marker.x2));
                 const top = Math.floor(Math.min(marker.y1, marker.y2));
@@ -1351,6 +1466,17 @@ def create_app(camera: Camera | None = None) -> Flask:
                         ` fill="#f9fafb"></circle>` +
                         `<text x="${marker.x1 + 1}" y="${marker.y1 - 0.8}">${label}</text>`;
                     }
+                    if (marker.kind === "circle") {
+                      const radius = Math.hypot(
+                        marker.x2 - marker.x1,
+                        marker.y2 - marker.y1
+                      );
+                      return `<circle cx="${marker.x1}" cy="${marker.y1}"` +
+                        ` r="${radius}" fill="none" stroke="#f9fafb"` +
+                        ` stroke-width="1.5" vector-effect="non-scaling-stroke"></circle>` +
+                        `<text x="${marker.x1 - radius + 0.4}"` +
+                        ` y="${marker.y1 - radius - 0.6}">${label}</text>`;
+                    }
                     const x = Math.min(marker.x1, marker.x2);
                     const y = Math.min(marker.y1, marker.y2);
                     const width = Math.abs(marker.x2 - marker.x1);
@@ -1376,9 +1502,9 @@ def create_app(camera: Camera | None = None) -> Flask:
                       return `<tr><td>${marker.id}</td><td>--</td><td>--</td><td>--</td></tr>`;
                     }
                     return `<tr><td>${marker.id}</td>` +
-                      `<td>${summary.min.toFixed(1)}</td>` +
-                      `<td>${summary.max.toFixed(1)}</td>` +
-                      `<td>${summary.avg.toFixed(1)}</td></tr>`;
+                      `<td>${formatTemperature(summary.min)}</td>` +
+                      `<td>${formatTemperature(summary.max)}</td>` +
+                      `<td>${formatTemperature(summary.avg)}</td></tr>`;
                   })
                   .join("");
               }
@@ -1397,6 +1523,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                 markers.length = 0;
                 counters.point = 0;
                 counters.rect = 0;
+                counters.circle = 0;
                 draft = null;
                 renderOverlay();
                 renderMeasurements();
@@ -1438,12 +1565,89 @@ def create_app(camera: Camera | None = None) -> Flask:
                   pending.y2 - pending.y1
                 );
                 if (spread >= 1) {
-                  counters.rect += 1;
-                  pending.id = `R${counters.rect}`;
+                  if (pending.kind === "circle") {
+                    counters.circle += 1;
+                    pending.id = `C${counters.circle}`;
+                  } else {
+                    counters.rect += 1;
+                    pending.id = `R${counters.rect}`;
+                  }
                   markers.push(pending);
                 }
                 renderOverlay();
                 renderMeasurements();
+              });
+
+              // Predefined measurement layouts. Coordinates are fractions of
+              // the 32 x 24 sensor grid, so a template lands in the same place
+              // whatever the browser window size is.
+              const TEMPLATES = {
+                "columns-5": { kind: "rect", columns: 5, rows: 1 },
+                "columns-3": { kind: "rect", columns: 3, rows: 1 },
+                "grid-2x2": { kind: "rect", columns: 2, rows: 2 },
+                "grid-3x3": { kind: "rect", columns: 3, rows: 3 },
+                "circles-4": { kind: "circle", columns: 2, rows: 2 },
+                "circle-center": { kind: "circle", columns: 1, rows: 1 },
+              };
+              const TEMPLATE_MARGIN = 0.06;
+              const TEMPLATE_GAP = 0.02;
+
+              function applyTemplate(name) {
+                const template = TEMPLATES[name];
+                if (!template) {
+                  return;
+                }
+                markers.length = 0;
+                counters.point = 0;
+                counters.rect = 0;
+                counters.circle = 0;
+                draft = null;
+
+                const usableWidth = 32 * (1 - 2 * TEMPLATE_MARGIN);
+                const usableHeight = 24 * (1 - 2 * TEMPLATE_MARGIN);
+                const left = 32 * TEMPLATE_MARGIN;
+                const top = 24 * TEMPLATE_MARGIN;
+                const gapX = 32 * TEMPLATE_GAP;
+                const gapY = 24 * TEMPLATE_GAP;
+                const cellWidth =
+                  (usableWidth - gapX * (template.columns - 1)) / template.columns;
+                const cellHeight =
+                  (usableHeight - gapY * (template.rows - 1)) / template.rows;
+
+                for (let row = 0; row < template.rows; row += 1) {
+                  for (let column = 0; column < template.columns; column += 1) {
+                    const x = left + column * (cellWidth + gapX);
+                    const y = top + row * (cellHeight + gapY);
+                    if (template.kind === "circle") {
+                      const radius = Math.min(cellWidth, cellHeight) / 2;
+                      counters.circle += 1;
+                      markers.push({
+                        kind: "circle",
+                        id: `C${counters.circle}`,
+                        x1: x + cellWidth / 2,
+                        y1: y + cellHeight / 2,
+                        x2: x + cellWidth / 2 + radius,
+                        y2: y + cellHeight / 2,
+                      });
+                    } else {
+                      counters.rect += 1;
+                      markers.push({
+                        kind: "rect",
+                        id: `R${counters.rect}`,
+                        x1: x,
+                        y1: y,
+                        x2: x + cellWidth,
+                        y2: y + cellHeight,
+                      });
+                    }
+                  }
+                }
+                renderOverlay();
+                renderMeasurements();
+              }
+
+              templateSelect.addEventListener("change", () => {
+                applyTemplate(templateSelect.value);
               });
 
               function selectedFormat() {
@@ -1514,6 +1718,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                 window.location.href = "recording/download";
               });
 
+              applyUnit();
               refreshCameraStatus();
               refreshRecording();
               refreshTemperatureGrid();

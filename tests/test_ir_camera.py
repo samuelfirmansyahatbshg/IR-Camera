@@ -556,7 +556,11 @@ def test_home_page_shows_the_temperature_scale_served_as_a_png():
     scale = client.get("/temperature_scale.png")
 
     assert b'src="temperature_scale.png"' in page.data
-    assert b"45 C" in page.data and b"15 C" in page.data
+    # The tick labels are rendered by the page so they can follow the unit
+    # toggle; the server only pins the range the scale image covers.
+    assert b'id="scale-ticks"' in page.data
+    assert b"MIN_SCALE_CELSIUS = 15" in page.data
+    assert b"MAX_SCALE_CELSIUS = 45" in page.data
     assert scale.status_code == 200
     assert scale.mimetype == "image/png"
     assert scale.get_data().startswith(b"\x89PNG")
@@ -685,3 +689,18 @@ def test_refresh_register_errors_remain_bounded_capture_failures(failure):
 
     assert camera.read_frame() is None
     assert camera.last_error == "OSError: Refresh register unavailable"
+
+
+def test_home_page_offers_unit_toggle_and_measurement_templates():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+
+    page = app.test_client().get("/").data
+
+    assert b'id="toggle-unit"' in page
+    assert b'id="tool-circle"' in page
+    assert b'id="template-select"' in page
+    # Downloads stay in Celsius whatever the page displays.
+    assert b"celsius" in page or b"Celsius" in page
+    for layout in (b"columns-5", b"grid-3x3", b"circles-4", b"circle-center"):
+        assert layout in page

@@ -71,9 +71,14 @@ Hovering the feed shows the temperature of the pixel under the cursor, both as a
 
 - `Point` click places `P1`, `P2`, ... on one sensor cell.
 - `Rectangle` drag places `R1`, `R2`, ... and covers every cell inside the region.
+- `Circle` drag places `C1`, `C2`, ... from the centre outwards and covers every cell whose centre falls inside the radius.
 - `Clear` removes all markers.
+- `Show F` / `Show C` switches every displayed temperature between Celsius and Fahrenheit. The choice is remembered in the browser's local storage.
+- `Template` applies a predefined layout for repeatable measurements: `5 columns (trays)`, `3 columns`, `2 x 2 grid`, `3 x 3 grid`, `4 circles` or `Center circle`. Applying a template replaces the current markers. Template geometry is expressed as fractions of the 32 x 24 grid, so the same layout lands on the same part of the scene every time.
 
 The table lists each marker's minimum, maximum and average temperature and refreshes twice a second. Marker geometry is stored in sensor cell coordinates, so the overlay and the statistics stay correct at any window size. The page reads the grid from `GET /latest_frame.json`, which returns `{"width": 32, "height": 24, "temperatures": [[...]]}` with `temperatures` set to `null` before the first frame.
+
+The unit toggle only affects what the page displays. The sensor, `/camera_status`, `/latest_frame.json` and every recording download stay in Celsius so saved data always carries one unit.
 
 ## Collecting data from the page
 
