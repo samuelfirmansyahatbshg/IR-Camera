@@ -697,10 +697,17 @@ def test_home_page_offers_unit_toggle_and_measurement_templates():
 
     page = app.test_client().get("/").data
 
-    assert b'id="toggle-unit"' in page
+    assert b'id="unit-celsius"' in page
+    assert b'id="unit-fahrenheit"' in page
+    assert b'id="toggle-unit"' not in page
     assert b'id="tool-circle"' in page
-    assert b'id="template-select"' in page
     # Downloads stay in Celsius whatever the page displays.
     assert b"celsius" in page or b"Celsius" in page
-    for layout in (b"columns-5", b"grid-3x3", b"circles-4", b"circle-center"):
-        assert layout in page
+    for control in (
+        b'id="template-select"',
+        b'id="template-name"',
+        b'id="template-save"',
+        b'id="template-load"',
+        b'id="template-delete"',
+    ):
+        assert control in page

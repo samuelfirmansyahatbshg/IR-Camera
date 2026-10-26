@@ -888,6 +888,45 @@ def create_app(camera: Camera | None = None) -> Flask:
                 text-transform: none;
                 cursor: pointer;
               }
+              .metrics-column {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                min-width: 0;
+              }
+              .unit-toggle {
+                display: flex;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                overflow: hidden;
+                background: #0b1220;
+              }
+              .unit-option {
+                flex: 1 1 0;
+                padding: 8px 0;
+                border: 0;
+                background: transparent;
+                color: #9ca3af;
+                font-weight: 700;
+                font-size: 0.95rem;
+                cursor: pointer;
+              }
+              .unit-option.is-active {
+                background: #082f49;
+                color: #f9fafb;
+                box-shadow: inset 0 0 0 2px #38bdf8;
+              }
+              .template-picker input {
+                padding: 8px 10px;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                background: #0b1220;
+                color: #f9fafb;
+                font-size: 0.85rem;
+                letter-spacing: normal;
+                text-transform: none;
+                width: 11rem;
+              }
               #camera-frame {
                 cursor: crosshair;
               }
@@ -1081,7 +1120,15 @@ def create_app(camera: Camera | None = None) -> Flask:
                     <figcaption id="scale-ticks" class="scale-ticks"></figcaption>
                   </figure>
                 </div>
-                <aside class="metrics" aria-label="Stream metrics">
+                <div class="metrics-column">
+                  <div class="unit-toggle" role="group"
+                       aria-label="Temperature unit">
+                    <button id="unit-celsius" type="button"
+                            class="unit-option is-active">C</button>
+                    <button id="unit-fahrenheit" type="button"
+                            class="unit-option">F</button>
+                  </div>
+                  <aside class="metrics" aria-label="Stream metrics">
                   <div class="metric">
                     <div class="metric-label">Capture rate</div>
                     <div>
@@ -1110,7 +1157,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                       ><span class="metric-unit unit-label">C</span>
                     </div>
                   </div>
-                </aside>
+                  </aside>
+                </div>
               </div>
               <section class="measure" aria-label="Measurement tools">
                 <div class="measure-tools">
@@ -1118,18 +1166,19 @@ def create_app(camera: Camera | None = None) -> Flask:
                   <button id="tool-rect" type="button" class="tool">Rectangle</button>
                   <button id="tool-circle" type="button" class="tool">Circle</button>
                   <button id="clear-measurements" type="button" class="tool">Clear</button>
-                  <button id="toggle-unit" type="button" class="tool">Show F</button>
                   <label class="template-picker">
-                    Template
+                    Saved layouts
                     <select id="template-select">
-                      <option value="">Choose a layout</option>
-                      <option value="columns-5">5 columns (trays)</option>
-                      <option value="columns-3">3 columns</option>
-                      <option value="grid-2x2">2 x 2 grid</option>
-                      <option value="grid-3x3">3 x 3 grid</option>
-                      <option value="circles-4">4 circles</option>
-                      <option value="circle-center">Center circle</option>
+                      <option value="">No saved layouts</option>
                     </select>
+                    <button id="template-load" type="button" class="tool">Load</button>
+                    <button id="template-delete" type="button" class="tool">Delete</button>
+                  </label>
+                  <label class="template-picker">
+                    Save current
+                    <input id="template-name" type="text" maxlength="40"
+                           placeholder="Layout name">
+                    <button id="template-save" type="button" class="tool">Save</button>
                   </label>
                   <span id="measure-hint">Click for a point; drag for a rectangle or circle.</span>
                 </div>
@@ -1190,7 +1239,8 @@ def create_app(camera: Camera | None = None) -> Flask:
               const formatInputs = Array.from(
                 document.querySelectorAll('input[name="capture-format"]')
               );
-              const unitButton = document.getElementById("toggle-unit");
+              const celsiusButton = document.getElementById("unit-celsius");
+              const fahrenheitButton = document.getElementById("unit-fahrenheit");
               const unitLabels = Array.from(
                 document.querySelectorAll(".unit-label")
               );
@@ -1244,7 +1294,10 @@ def create_app(camera: Camera | None = None) -> Flask:
                   "ir-camera-unit",
                   showFahrenheit ? "F" : "C"
                 );
-                unitButton.textContent = showFahrenheit ? "Show C" : "Show F";
+                celsiusButton.classList.toggle("is-active", !showFahrenheit);
+                celsiusButton.setAttribute("aria-pressed", String(!showFahrenheit));
+                fahrenheitButton.classList.toggle("is-active", showFahrenheit);
+                fahrenheitButton.setAttribute("aria-pressed", String(showFahrenheit));
                 unitLabels.forEach((label) => {
                   label.textContent = unitSymbol();
                 });
@@ -1258,9 +1311,17 @@ def create_app(camera: Camera | None = None) -> Flask:
                 refreshCameraStatus();
               }
 
-              unitButton.addEventListener("click", () => {
-                showFahrenheit = !showFahrenheit;
-                applyUnit();
+              celsiusButton.addEventListener("click", () => {
+                if (showFahrenheit) {
+                  showFahrenheit = false;
+                  applyUnit();
+                }
+              });
+              fahrenheitButton.addEventListener("click", () => {
+                if (!showFahrenheit) {
+                  showFahrenheit = true;
+                  applyUnit();
+                }
               });
 
 
@@ -1588,23 +1649,101 @@ def create_app(camera: Camera | None = None) -> Flask:
                 renderMeasurements();
               });
 
-              // Predefined measurement layouts. Coordinates are fractions of
-              // the 32 x 24 sensor grid, so a template lands in the same place
-              // whatever the browser window size is.
-              const TEMPLATES = {
-                "columns-5": { kind: "rect", columns: 5, rows: 1 },
-                "columns-3": { kind: "rect", columns: 3, rows: 1 },
-                "grid-2x2": { kind: "rect", columns: 2, rows: 2 },
-                "grid-3x3": { kind: "rect", columns: 3, rows: 3 },
-                "circles-4": { kind: "circle", columns: 2, rows: 2 },
-                "circle-center": { kind: "circle", columns: 1, rows: 1 },
-              };
-              const TEMPLATE_MARGIN = 0.06;
-              const TEMPLATE_GAP = 0.02;
+              // Named layouts the operator saves. Marker geometry is stored in
+              // sensor cell coordinates, so a layout lands on the same part of
+              // the scene whatever the browser window size is.
+              const TEMPLATE_STORAGE_KEY = "ir-camera-templates";
+              const templateName = document.getElementById("template-name");
+              const templateSave = document.getElementById("template-save");
+              const templateLoad = document.getElementById("template-load");
+              const templateDelete = document.getElementById("template-delete");
+              const measureHint = document.getElementById("measure-hint");
+              const DEFAULT_HINT = measureHint.textContent;
 
-              function applyTemplate(name) {
-                const template = TEMPLATES[name];
-                if (!template) {
+              function readTemplates() {
+                try {
+                  const stored = JSON.parse(
+                    window.localStorage.getItem(TEMPLATE_STORAGE_KEY) || "{}"
+                  );
+                  return stored && typeof stored === "object" ? stored : {};
+                } catch (storageError) {
+                  return {};
+                }
+              }
+
+              function writeTemplates(templates) {
+                window.localStorage.setItem(
+                  TEMPLATE_STORAGE_KEY,
+                  JSON.stringify(templates)
+                );
+              }
+
+              function escapeHtml(value) {
+                return value
+                  .replace(/&/g, "&amp;")
+                  .replace(/</g, "&lt;")
+                  .replace(/>/g, "&gt;")
+                  .replace(/"/g, "&quot;");
+              }
+
+              function renderTemplateOptions(selected) {
+                const names = Object.keys(readTemplates()).sort((a, b) =>
+                  a.localeCompare(b)
+                );
+                const placeholder = names.length
+                  ? "Choose a layout"
+                  : "No saved layouts";
+                templateSelect.innerHTML =
+                  `<option value="">${placeholder}</option>` +
+                  names
+                    .map((name) => {
+                      const safe = escapeHtml(name);
+                      return `<option value="${safe}">${safe}</option>`;
+                    })
+                    .join("");
+                if (selected && names.includes(selected)) {
+                  templateSelect.value = selected;
+                }
+                templateLoad.disabled = names.length === 0;
+                templateDelete.disabled = names.length === 0;
+              }
+
+              templateSave.addEventListener("click", () => {
+                const name = templateName.value.trim();
+                if (!name) {
+                  measureHint.textContent = "Name the layout before saving it.";
+                  return;
+                }
+                if (markers.length === 0) {
+                  measureHint.textContent =
+                    "Place at least one marker before saving a layout.";
+                  return;
+                }
+                const templates = readTemplates();
+                const replacing = Object.prototype.hasOwnProperty.call(
+                  templates,
+                  name
+                );
+                templates[name] = markers.map((marker) => ({
+                  kind: marker.kind,
+                  x1: marker.x1,
+                  y1: marker.y1,
+                  x2: marker.x2,
+                  y2: marker.y2,
+                }));
+                writeTemplates(templates);
+                renderTemplateOptions(name);
+                templateName.value = "";
+                measureHint.textContent =
+                  `${replacing ? "Replaced" : "Saved"} "${name}" with ` +
+                  `${markers.length} marker(s).`;
+              });
+
+              templateLoad.addEventListener("click", () => {
+                const name = templateSelect.value;
+                const saved = readTemplates()[name];
+                if (!saved) {
+                  measureHint.textContent = "Choose a saved layout first.";
                   return;
                 }
                 markers.length = 0;
@@ -1612,53 +1751,38 @@ def create_app(camera: Camera | None = None) -> Flask:
                 counters.rect = 0;
                 counters.circle = 0;
                 draft = null;
-
-                const usableWidth = 32 * (1 - 2 * TEMPLATE_MARGIN);
-                const usableHeight = 24 * (1 - 2 * TEMPLATE_MARGIN);
-                const left = 32 * TEMPLATE_MARGIN;
-                const top = 24 * TEMPLATE_MARGIN;
-                const gapX = 32 * TEMPLATE_GAP;
-                const gapY = 24 * TEMPLATE_GAP;
-                const cellWidth =
-                  (usableWidth - gapX * (template.columns - 1)) / template.columns;
-                const cellHeight =
-                  (usableHeight - gapY * (template.rows - 1)) / template.rows;
-
-                for (let row = 0; row < template.rows; row += 1) {
-                  for (let column = 0; column < template.columns; column += 1) {
-                    const x = left + column * (cellWidth + gapX);
-                    const y = top + row * (cellHeight + gapY);
-                    if (template.kind === "circle") {
-                      const radius = Math.min(cellWidth, cellHeight) / 2;
-                      counters.circle += 1;
-                      markers.push({
-                        kind: "circle",
-                        id: `C${counters.circle}`,
-                        x1: x + cellWidth / 2,
-                        y1: y + cellHeight / 2,
-                        x2: x + cellWidth / 2 + radius,
-                        y2: y + cellHeight / 2,
-                      });
-                    } else {
-                      counters.rect += 1;
-                      markers.push({
-                        kind: "rect",
-                        id: `R${counters.rect}`,
-                        x1: x,
-                        y1: y,
-                        x2: x + cellWidth,
-                        y2: y + cellHeight,
-                      });
-                    }
+                saved.forEach((marker) => {
+                  if (marker.kind === "point") {
+                    counters.point += 1;
+                    markers.push({ ...marker, id: `P${counters.point}` });
+                  } else if (marker.kind === "circle") {
+                    counters.circle += 1;
+                    markers.push({ ...marker, id: `C${counters.circle}` });
+                  } else {
+                    counters.rect += 1;
+                    markers.push({ ...marker, id: `R${counters.rect}` });
                   }
-                }
+                });
                 renderOverlay();
                 renderMeasurements();
-              }
-
-              templateSelect.addEventListener("change", () => {
-                applyTemplate(templateSelect.value);
+                measureHint.textContent =
+                  `Loaded "${name}" with ${markers.length} marker(s).`;
               });
+
+              templateDelete.addEventListener("click", () => {
+                const name = templateSelect.value;
+                const templates = readTemplates();
+                if (!name || !(name in templates)) {
+                  measureHint.textContent = "Choose a saved layout first.";
+                  return;
+                }
+                delete templates[name];
+                writeTemplates(templates);
+                renderTemplateOptions();
+                measureHint.textContent = `Deleted "${name}". ${DEFAULT_HINT}`;
+              });
+
+              renderTemplateOptions();
 
               function selectedFormat() {
                 const checked = formatInputs.find((input) => input.checked);

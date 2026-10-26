@@ -73,8 +73,9 @@ Hovering the feed shows the temperature of the pixel under the cursor, both as a
 - `Rectangle` drag places `R1`, `R2`, ... and covers every cell inside the region.
 - `Circle` drag places `C1`, `C2`, ... from the centre outwards and covers every cell whose centre falls inside the radius.
 - `Clear` removes all markers.
-- `Show F` / `Show C` switches every displayed temperature between Celsius and Fahrenheit. The choice is remembered in the browser's local storage.
-- `Template` applies a predefined layout for repeatable measurements: `5 columns (trays)`, `3 columns`, `2 x 2 grid`, `3 x 3 grid`, `4 circles` or `Center circle`. Applying a template replaces the current markers. Template geometry is expressed as fractions of the 32 x 24 grid, so the same layout lands on the same part of the scene every time.
+- `Save current` names the markers now on screen and stores them; `Saved layouts` then offers `Load` to place that layout again and `Delete` to remove it. Saving under an existing name replaces it. Loading replaces the markers on screen. Layouts live in the browser's local storage, so they stay on the machine that saved them.
+
+The `C` / `F` toggle above the metrics panel switches every displayed temperature between Celsius and Fahrenheit. The choice is remembered in the browser's local storage.
 
 The table lists each marker's minimum, maximum and average temperature and refreshes twice a second. Marker geometry is stored in sensor cell coordinates, so the overlay and the statistics stay correct at any window size. The page reads the grid from `GET /latest_frame.json`, which returns `{"width": 32, "height": 24, "temperatures": [[...]]}` with `temperatures` set to `null` before the first frame.
 
