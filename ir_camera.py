@@ -932,6 +932,60 @@ def create_app(camera: Camera | None = None) -> Flask:
                 color: #f9fafb;
                 box-shadow: inset 0 0 0 2px #38bdf8;
               }
+              .switch-row {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                cursor: pointer;
+                font-size: 0.8rem;
+                color: #9ca3af;
+                line-height: 1.25;
+              }
+              .switch-row input {
+                position: absolute;
+                opacity: 0;
+                width: 0;
+                height: 0;
+              }
+              .switch {
+                flex: 0 0 auto;
+                position: relative;
+                width: 42px;
+                height: 24px;
+                border: 2px solid #374151;
+                border-radius: 999px;
+                background: #0b1220;
+                transition: background 0.15s, border-color 0.15s;
+              }
+              .switch::after {
+                content: "";
+                position: absolute;
+                top: 3px;
+                left: 3px;
+                width: 14px;
+                height: 14px;
+                border-radius: 50%;
+                background: #6b7280;
+                transition: transform 0.15s, background 0.15s;
+              }
+              .switch-row input:checked + .switch {
+                border-color: #38bdf8;
+                background: #082f49;
+              }
+              .switch-row input:checked + .switch::after {
+                transform: translateX(18px);
+                background: #38bdf8;
+              }
+              .switch-row input:focus-visible + .switch {
+                outline: 2px solid #38bdf8;
+                outline-offset: 2px;
+              }
+              .switch-row input:disabled + .switch {
+                opacity: 0.45;
+              }
+              .switch-row input:checked ~ .switch-text {
+                color: #f9fafb;
+              }
               .template-picker input {
                 padding: 8px 10px;
                 border: 2px solid #374151;
@@ -1145,6 +1199,11 @@ def create_app(camera: Camera | None = None) -> Flask:
                     <button id="unit-fahrenheit" type="button"
                             class="unit-option">F</button>
                   </div>
+                  <label class="switch-row">
+                    <input id="toggle-values" type="checkbox">
+                    <span class="switch" aria-hidden="true"></span>
+                    <span class="switch-text">Show Temperature Value</span>
+                  </label>
                   <aside class="metrics" aria-label="Stream metrics">
                   <div class="metric">
                     <div class="metric-label">Capture rate</div>
@@ -1183,7 +1242,6 @@ def create_app(camera: Camera | None = None) -> Flask:
                   <button id="tool-rect" type="button" class="tool">Rectangle</button>
                   <button id="tool-circle" type="button" class="tool">Circle</button>
                   <button id="clear-measurements" type="button" class="tool">Clear</button>
-                  <button id="toggle-values" type="button" class="tool">Numbers</button>
                   <label class="template-picker">
                     Saved layouts
                     <select id="template-select">
@@ -1560,7 +1618,7 @@ def create_app(camera: Camera | None = None) -> Flask:
               // Per-cell numbers are dense at 32 x 24, so they are rounded to
               // whole degrees and only drawn when the operator asks for them.
               let showCellValues = false;
-              const valuesButton = document.getElementById("toggle-values");
+              const valuesToggle = document.getElementById("toggle-values");
 
               function renderCellValues() {
                 if (!showCellValues || temperatureGrid === null) {
@@ -1581,9 +1639,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                 return parts.join("");
               }
 
-              valuesButton.addEventListener("click", () => {
-                showCellValues = !showCellValues;
-                valuesButton.classList.toggle("is-active", showCellValues);
+              valuesToggle.addEventListener("change", () => {
+                showCellValues = valuesToggle.checked;
                 renderOverlay();
               });
 
@@ -2038,10 +2095,6 @@ def create_app(camera: Camera | None = None) -> Flask:
                 stroke: #111827;
                 stroke-width: 0.1px;
               }
-              #toggle-values.is-active {
-                border-color: #38bdf8;
-                background: #082f49;
-              }
               .scale {
                 position: relative;
                 display: flex;
@@ -2094,6 +2147,58 @@ def create_app(camera: Camera | None = None) -> Flask:
                 color: #f9fafb;
                 box-shadow: inset 0 0 0 2px #38bdf8;
               }
+              .switch-row {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                cursor: pointer;
+                margin-bottom: 10px;
+                font-size: 0.8rem;
+                color: #9ca3af;
+                line-height: 1.25;
+              }
+              .switch-row input {
+                position: absolute;
+                opacity: 0;
+                width: 0;
+                height: 0;
+              }
+              .switch {
+                flex: 0 0 auto;
+                position: relative;
+                width: 42px;
+                height: 24px;
+                border: 2px solid #374151;
+                border-radius: 999px;
+                background: #0b1220;
+                transition: background 0.15s, border-color 0.15s;
+              }
+              .switch::after {
+                content: "";
+                position: absolute;
+                top: 3px;
+                left: 3px;
+                width: 14px;
+                height: 14px;
+                border-radius: 50%;
+                background: #6b7280;
+                transition: transform 0.15s, background 0.15s;
+              }
+              .switch-row input:checked + .switch {
+                border-color: #38bdf8;
+                background: #082f49;
+              }
+              .switch-row input:checked + .switch::after {
+                transform: translateX(18px);
+                background: #38bdf8;
+              }
+              .switch-row input:focus-visible + .switch {
+                outline: 2px solid #38bdf8;
+                outline-offset: 2px;
+              }
+              .switch-row input:disabled + .switch { opacity: 0.45; }
+              .switch-row input:disabled ~ .switch-text { opacity: 0.45; }
+              .switch-row input:checked ~ .switch-text { color: #f9fafb; }
               .metrics {
                 border: 2px solid #374151;
                 border-radius: 8px;
@@ -2122,8 +2227,7 @@ def create_app(camera: Camera | None = None) -> Flask:
               <h1>Recording viewer</h1>
               <p class="lede">
                 Open a downloaded <code>ir-camera-&lt;session&gt;.zip</code> or
-                <code>.json</code>. The file is read in this browser and never
-                uploaded. <a href="./">Back to the live feed</a>
+                <code>.json</code>. <a href="./">Back to the live feed</a>
               </p>
               <div class="loader">
                 <input id="file-input" type="file" accept=".zip,.json">
@@ -2149,7 +2253,6 @@ def create_app(camera: Camera | None = None) -> Flask:
                     <button id="play" type="button" disabled>Play</button>
                     <button id="previous" type="button" disabled>Previous</button>
                     <button id="next" type="button" disabled>Next</button>
-                    <button id="toggle-values" type="button" disabled>Numbers</button>
                     <input id="frame-slider" type="range" min="0" max="0" value="0" disabled>
                     <label>
                       Speed
@@ -2167,6 +2270,11 @@ def create_app(camera: Camera | None = None) -> Flask:
                     <button id="unit-celsius" type="button" class="unit-option is-active">C</button>
                     <button id="unit-fahrenheit" type="button" class="unit-option">F</button>
                   </div>
+                  <label class="switch-row">
+                    <input id="toggle-values" type="checkbox" disabled>
+                    <span class="switch" aria-hidden="true"></span>
+                    <span class="switch-text">Show Temperature Value</span>
+                  </label>
                   <aside class="metrics" aria-label="Frame metrics">
                     <div class="metric">
                       <div class="metric-label">Frame</div>
@@ -2213,7 +2321,7 @@ def create_app(camera: Camera | None = None) -> Flask:
               const playButton = document.getElementById("play");
               const previousButton = document.getElementById("previous");
               const nextButton = document.getElementById("next");
-              const valuesButton = document.getElementById("toggle-values");
+              const valuesToggle = document.getElementById("toggle-values");
               const valueOverlay = document.getElementById("value-overlay");
               const slider = document.getElementById("frame-slider");
               const speedSelect = document.getElementById("speed");
@@ -2364,9 +2472,8 @@ def create_app(camera: Camera | None = None) -> Flask:
                 valueOverlay.innerHTML = parts.join("");
               }
 
-              valuesButton.addEventListener("click", () => {
-                showCellValues = !showCellValues;
-                valuesButton.classList.toggle("is-active", showCellValues);
+              valuesToggle.addEventListener("change", () => {
+                showCellValues = valuesToggle.checked;
                 renderCellValues();
               });
 
@@ -2610,7 +2717,11 @@ def create_app(camera: Camera | None = None) -> Flask:
                 playButton.disabled = !hasFrames;
                 previousButton.disabled = !hasFrames;
                 nextButton.disabled = !hasFrames;
-                valuesButton.disabled = grids.length === 0;
+                valuesToggle.disabled = grids.length === 0;
+                if (valuesToggle.disabled) {
+                  valuesToggle.checked = false;
+                  showCellValues = false;
+                }
                 renderScaleTicks();
                 if (hasFrames) {
                   showFrame(0);

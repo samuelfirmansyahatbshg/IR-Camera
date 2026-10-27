@@ -73,7 +73,7 @@ Hovering the feed shows the temperature of the pixel under the cursor, both as a
 - `Rectangle` drag places `R1`, `R2`, ... and covers every cell inside the region.
 - `Circle` drag places `C1`, `C2`, ... from the centre outwards and covers every cell whose centre falls inside the radius.
 - `Clear` removes all markers.
-- `Numbers` prints every cell's temperature over the image, rounded to whole degrees and following the unit toggle. The same button is on the viewer page.
+- The `Show Temperature Value` switch under the `C` / `F` toggle prints every cell's temperature over the image, rounded to whole degrees and following the unit toggle. The viewer has the same switch, disabled until a recording with temperatures is open.
 - `Save current` names the markers now on screen and stores them; `Saved layouts` then offers `Load` to place that layout again and `Delete` to remove it. Saving under an existing name replaces it. Loading replaces the markers on screen. Layouts live in the browser's local storage, so they stay on the machine that saved them.
 
 The `C` / `F` toggle above the metrics panel switches every displayed temperature between Celsius and Fahrenheit. The choice is remembered in the browser's local storage.
@@ -86,7 +86,7 @@ The unit toggle only affects what the page displays. The sensor, `/camera_status
 
 `/viewer`, linked from the top of the live page, replays a downloaded recording. Pick an `ir-camera-<session>.zip` or `.json` with the file button: the file is parsed in the browser and never uploaded, so recordings from any machine can be reviewed without the camera being reachable.
 
-`Play` runs the session at its recorded timing, `Speed` scales that from 0.5x to 4x, and `Previous`, `Next` and the slider scrub frame by frame. The panel reports the frame number, its timestamp and that frame's minimum, maximum and average temperature; hovering reads a single cell and `Numbers` prints them all.
+`Play` runs the session at its recorded timing, `Speed` scales that from 0.5x to 4x, and `Previous`, `Next` and the slider scrub frame by frame. The panel reports the frame number, its timestamp and that frame's minimum, maximum and average temperature; hovering reads a single cell and the `Show Temperature Value` switch prints them all.
 
 Archives that contain `frames.json` (the `Numbers` and `Both` formats) are redrawn from the temperatures with the palette auto-ranged over the whole recording, so a session stays readable whatever `MIN_TEMPERATURE_C` and `MAX_TEMPERATURE_C` were set to while it was captured. An `Images (JPEG)` archive has no temperatures, so the viewer shows the stored JPEGs and the readouts stay blank; record with `Both` to keep the pictures and the numbers together.
 
