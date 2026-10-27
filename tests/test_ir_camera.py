@@ -717,3 +717,31 @@ def test_home_page_offers_unit_toggle_and_measurement_templates():
         b'id="template-delete"',
     ):
         assert control in page
+
+
+def test_viewer_page_replays_recordings_in_the_browser():
+    app = create_app(camera=PacedCamera())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    live = client.get("/").data
+    viewer = client.get("/viewer")
+
+    assert viewer.status_code == 200
+    page = viewer.data
+    # The live page links to it, and the viewer links back.
+    assert b'href="viewer"' in live
+    assert b'href="./"' in page
+    for control in (
+        b'id="file-input"',
+        b'id="play"',
+        b'id="frame-slider"',
+        b'id="speed"',
+        b'id="toggle-values"',
+        b'id="value-overlay"',
+    ):
+        assert control in page
+    # Both pages can print the per-cell numbers.
+    assert b'id="toggle-values"' in live
+    # Recordings are parsed in the browser: no upload route exists.
+    assert client.post("/viewer").status_code == 405

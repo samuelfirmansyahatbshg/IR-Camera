@@ -752,7 +752,14 @@ def create_app(camera: Camera | None = None) -> Flask:
                 margin: 32px auto;
               }
               h1 {
+                margin: 0 0 6px;
+              }
+              .page-link {
                 margin: 0 0 16px;
+                font-size: 0.9rem;
+              }
+              .page-link a {
+                color: #38bdf8;
               }
               .status {
                 border: 3px solid;
@@ -823,6 +830,11 @@ def create_app(camera: Camera | None = None) -> Flask:
                 paint-order: stroke;
                 stroke: #111827;
                 stroke-width: 0.3px;
+              }
+              .measure-overlay text.cell-value {
+                font-size: 0.5px;
+                font-weight: 600;
+                stroke-width: 0.1px;
               }
               .measure {
                 margin-top: 16px;
@@ -1098,6 +1110,7 @@ def create_app(camera: Camera | None = None) -> Flask:
           <body>
             <main>
               <h1>Live Thermal Camera Feed</h1>
+              <p class="page-link"><a href="viewer">Open a saved recording</a></p>
               <div id="camera-status" class="status connecting"
                    role="alert" aria-live="assertive">
                 CONNECTING TO CAMERA
@@ -1170,6 +1183,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                   <button id="tool-rect" type="button" class="tool">Rectangle</button>
                   <button id="tool-circle" type="button" class="tool">Circle</button>
                   <button id="clear-measurements" type="button" class="tool">Clear</button>
+                  <button id="toggle-values" type="button" class="tool">Numbers</button>
                   <label class="template-picker">
                     Saved layouts
                     <select id="template-select">
@@ -1317,6 +1331,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                 renderAverage();
                 updatePixelReadout();
                 renderMeasurements();
+                renderOverlay();
                 refreshCameraStatus();
               }
 
@@ -1402,6 +1417,7 @@ def create_app(camera: Camera | None = None) -> Flask:
                 }
                 updatePixelReadout();
                 renderMeasurements();
+                renderOverlay();
               }
 
               function updatePixelReadout() {
@@ -1541,9 +1557,39 @@ def create_app(camera: Camera | None = None) -> Flask:
                 return values;
               }
 
+              // Per-cell numbers are dense at 32 x 24, so they are rounded to
+              // whole degrees and only drawn when the operator asks for them.
+              let showCellValues = false;
+              const valuesButton = document.getElementById("toggle-values");
+
+              function renderCellValues() {
+                if (!showCellValues || temperatureGrid === null) {
+                  return "";
+                }
+                const parts = [];
+                for (let row = 0; row < temperatureGrid.length; row += 1) {
+                  for (let column = 0; column < temperatureGrid[row].length; column += 1) {
+                    const value = Math.round(
+                      toDisplay(temperatureGrid[row][column])
+                    );
+                    parts.push(
+                      `<text class="cell-value" x="${column + 0.5}"` +
+                      ` y="${row + 0.68}" text-anchor="middle">${value}</text>`
+                    );
+                  }
+                }
+                return parts.join("");
+              }
+
+              valuesButton.addEventListener("click", () => {
+                showCellValues = !showCellValues;
+                valuesButton.classList.toggle("is-active", showCellValues);
+                renderOverlay();
+              });
+
               function renderOverlay() {
                 const shapes = draft === null ? markers : markers.concat([draft]);
-                overlay.innerHTML = shapes
+                overlay.innerHTML = renderCellValues() + shapes
                   .map((marker) => {
                     const label = marker.id || "";
                     if (marker.kind === "point") {
@@ -1880,6 +1926,754 @@ def create_app(camera: Camera | None = None) -> Flask:
               // The sensor publishes about 2 full frames/s; poll at the same rate so
               // the hover readout follows the picture.
               window.setInterval(refreshTemperatureGrid, 500);
+            </script>
+          </body>
+        </html>
+        """
+
+    @app.get("/viewer")
+    def viewer():
+        """Replay a downloaded recording. The file never leaves the browser."""
+        return """
+        <!doctype html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>IR Camera recording viewer</title>
+            <style>
+              :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+              body { margin: 0; background: #111827; color: #f9fafb; }
+              main { width: min(94vw, 980px); margin: 32px auto; }
+              h1 { margin: 0 0 6px; }
+              .lede { margin: 0 0 18px; color: #9ca3af; }
+              a { color: #38bdf8; }
+              .loader {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+                margin-bottom: 16px;
+              }
+              .playback {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+                margin-top: 14px;
+              }
+              button, select, input[type="file"] {
+                padding: 9px 14px;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                background: #0b1220;
+                color: #f9fafb;
+                font-weight: 600;
+                font-size: 0.9rem;
+                cursor: pointer;
+              }
+              #play { border-color: #22c55e; background: #052e16; }
+              button[disabled] { opacity: 0.45; cursor: not-allowed; }
+              #frame-slider { flex: 1 1 240px; min-width: 180px; padding: 0; }
+              .viewer-layout {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 190px;
+                gap: 16px;
+                align-items: start;
+              }
+              @media (max-width: 680px) {
+                .viewer-layout { grid-template-columns: minmax(0, 1fr); }
+              }
+              .stage { display: flex; gap: 10px; align-items: stretch; }
+              .canvas-wrap {
+                position: relative;
+                flex: 1 1 auto;
+                min-width: 0;
+                border: 2px solid #374151;
+                border-radius: 8px;
+                overflow: hidden;
+                background: #030712;
+                aspect-ratio: 4 / 3;
+                cursor: crosshair;
+              }
+              #frame-canvas, #frame-image {
+                /* Absolute so the hidden element never stretches the stage and
+                   the wrapper's aspect-ratio alone sets the height. */
+                position: absolute;
+                inset: 0;
+                display: block;
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+              }
+              #frame-canvas[hidden], #frame-image[hidden] {
+                display: none;
+              }
+              .pixel-readout {
+                position: absolute;
+                transform: translate(-50%, -140%);
+                padding: 4px 8px;
+                border: 1px solid #e5e7eb;
+                border-radius: 4px;
+                background: rgb(17 24 39 / 92%);
+                font-size: 0.8rem;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+                pointer-events: none;
+              }
+              .pixel-readout[hidden] { display: none; }
+              .value-overlay {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+              }
+              .value-overlay text {
+                font-family: system-ui, sans-serif;
+                font-size: 0.5px;
+                font-weight: 600;
+                fill: #f9fafb;
+                paint-order: stroke;
+                stroke: #111827;
+                stroke-width: 0.1px;
+              }
+              #toggle-values.is-active {
+                border-color: #38bdf8;
+                background: #082f49;
+              }
+              .scale {
+                position: relative;
+                display: flex;
+                align-self: stretch;
+                margin: 0;
+                padding-left: 28px;
+              }
+              .scale canvas {
+                /* Absolute so the canvas cannot impose its 1 x 256 intrinsic
+                   ratio on the row height. */
+                position: absolute;
+                left: 0;
+                top: 0;
+                display: block;
+                width: 22px;
+                height: 100%;
+                border: 1px solid #374151;
+                border-radius: 4px;
+              }
+              .scale-ticks {
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                font-size: 0.75rem;
+                line-height: 1;
+                color: #9ca3af;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+              }
+              .scale-ticks span:first-child { margin-top: -0.5em; }
+              .scale-ticks span:last-child { margin-bottom: -0.5em; }
+              .unit-toggle {
+                display: flex;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                overflow: hidden;
+                background: #0b1220;
+                margin-bottom: 10px;
+              }
+              .unit-option {
+                flex: 1 1 0;
+                padding: 8px 0;
+                border: 0;
+                border-radius: 0;
+                background: transparent;
+                color: #9ca3af;
+              }
+              .unit-option.is-active {
+                background: #082f49;
+                color: #f9fafb;
+                box-shadow: inset 0 0 0 2px #38bdf8;
+              }
+              .metrics {
+                border: 2px solid #374151;
+                border-radius: 8px;
+                padding: 14px;
+                background: #0b1220;
+              }
+              .metric + .metric { margin-top: 14px; }
+              .metric-label {
+                font-size: 0.75rem;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: #9ca3af;
+              }
+              .metric-value {
+                font-size: 1.6rem;
+                font-weight: 800;
+                font-variant-numeric: tabular-nums;
+              }
+              .metric-unit { font-size: 0.85rem; color: #9ca3af; margin-left: 4px; }
+              #load-state { color: #9ca3af; font-size: 0.9rem; }
+              #load-state.is-error { color: #fecaca; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <h1>Recording viewer</h1>
+              <p class="lede">
+                Open a downloaded <code>ir-camera-&lt;session&gt;.zip</code> or
+                <code>.json</code>. The file is read in this browser and never
+                uploaded. <a href="./">Back to the live feed</a>
+              </p>
+              <div class="loader">
+                <input id="file-input" type="file" accept=".zip,.json">
+                <span id="load-state">No recording opened.</span>
+              </div>
+              <div class="viewer-layout">
+                <div>
+                  <div class="stage">
+                    <div id="canvas-wrap" class="canvas-wrap">
+                      <canvas id="frame-canvas" width="32" height="24"></canvas>
+                      <img id="frame-image" alt="Recorded thermal frame" hidden>
+                      <svg id="value-overlay" class="value-overlay"
+                           viewBox="0 0 32 24" preserveAspectRatio="none"
+                           aria-hidden="true"></svg>
+                      <div id="pixel-readout" class="pixel-readout" hidden></div>
+                    </div>
+                    <figure class="scale">
+                      <canvas id="scale-canvas" width="1" height="256"></canvas>
+                      <figcaption id="scale-ticks" class="scale-ticks"></figcaption>
+                    </figure>
+                  </div>
+                  <div class="playback">
+                    <button id="play" type="button" disabled>Play</button>
+                    <button id="previous" type="button" disabled>Previous</button>
+                    <button id="next" type="button" disabled>Next</button>
+                    <button id="toggle-values" type="button" disabled>Numbers</button>
+                    <input id="frame-slider" type="range" min="0" max="0" value="0" disabled>
+                    <label>
+                      Speed
+                      <select id="speed">
+                        <option value="0.5">0.5x</option>
+                        <option value="1" selected>1x</option>
+                        <option value="2">2x</option>
+                        <option value="4">4x</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <div class="unit-toggle" role="group" aria-label="Temperature unit">
+                    <button id="unit-celsius" type="button" class="unit-option is-active">C</button>
+                    <button id="unit-fahrenheit" type="button" class="unit-option">F</button>
+                  </div>
+                  <aside class="metrics" aria-label="Frame metrics">
+                    <div class="metric">
+                      <div class="metric-label">Frame</div>
+                      <div><span id="frame-index" class="metric-value">--</span></div>
+                    </div>
+                    <div class="metric">
+                      <div class="metric-label">Timestamp</div>
+                      <div><span id="frame-time" class="metric-value">--</span></div>
+                    </div>
+                    <div class="metric">
+                      <div class="metric-label">Min</div>
+                      <div><span id="frame-min" class="metric-value">--</span
+                        ><span class="metric-unit unit-label">C</span></div>
+                    </div>
+                    <div class="metric">
+                      <div class="metric-label">Max</div>
+                      <div><span id="frame-max" class="metric-value">--</span
+                        ><span class="metric-unit unit-label">C</span></div>
+                    </div>
+                    <div class="metric">
+                      <div class="metric-label">Average</div>
+                      <div><span id="frame-avg" class="metric-value">--</span
+                        ><span class="metric-unit unit-label">C</span></div>
+                    </div>
+                    <div class="metric">
+                      <div class="metric-label">Cursor</div>
+                      <div><span id="cursor-value" class="metric-value">--</span
+                        ><span class="metric-unit unit-label">C</span></div>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            </main>
+            <script>
+              const fileInput = document.getElementById("file-input");
+              const loadState = document.getElementById("load-state");
+              const canvas = document.getElementById("frame-canvas");
+              const context = canvas.getContext("2d");
+              const frameImage = document.getElementById("frame-image");
+              const canvasWrap = document.getElementById("canvas-wrap");
+              const pixelReadout = document.getElementById("pixel-readout");
+              const scaleCanvas = document.getElementById("scale-canvas");
+              const scaleTicks = document.getElementById("scale-ticks");
+              const playButton = document.getElementById("play");
+              const previousButton = document.getElementById("previous");
+              const nextButton = document.getElementById("next");
+              const valuesButton = document.getElementById("toggle-values");
+              const valueOverlay = document.getElementById("value-overlay");
+              const slider = document.getElementById("frame-slider");
+              const speedSelect = document.getElementById("speed");
+              const celsiusButton = document.getElementById("unit-celsius");
+              const fahrenheitButton = document.getElementById("unit-fahrenheit");
+              const unitLabels = Array.from(document.querySelectorAll(".unit-label"));
+              const frameIndexValue = document.getElementById("frame-index");
+              const frameTimeValue = document.getElementById("frame-time");
+              const frameMinValue = document.getElementById("frame-min");
+              const frameMaxValue = document.getElementById("frame-max");
+              const frameAvgValue = document.getElementById("frame-avg");
+              const cursorValue = document.getElementById("cursor-value");
+
+              let grids = [];
+              let imageUrls = [];
+              let timeframes = [];
+              let rangeMin = 0;
+              let rangeMax = 1;
+              let current = 0;
+              let timer = null;
+              let cursorCell = null;
+              let palette = null;
+              let showFahrenheit =
+                window.localStorage.getItem("ir-camera-unit") === "F";
+
+              function toDisplay(celsius) {
+                return showFahrenheit ? celsius * 9 / 5 + 32 : celsius;
+              }
+
+              function formatTemperature(celsius) {
+                return toDisplay(celsius).toFixed(1);
+              }
+
+              function unitSymbol() {
+                return showFahrenheit ? "F" : "C";
+              }
+
+              // Sample the server's own scale image so the viewer and the live
+              // page use exactly the same inferno ramp.
+              async function loadPalette() {
+                const image = new Image();
+                image.src = "temperature_scale.png";
+                await image.decode();
+                const sampler = document.createElement("canvas");
+                sampler.width = 1;
+                sampler.height = 256;
+                const samplerContext = sampler.getContext("2d");
+                samplerContext.drawImage(image, 0, 0, 1, 256);
+                const pixels = samplerContext.getImageData(0, 0, 1, 256).data;
+                // The scale image runs hot at the top; index 0 must be coldest.
+                palette = [];
+                for (let step = 255; step >= 0; step -= 1) {
+                  const offset = step * 4;
+                  palette.push([
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                  ]);
+                }
+                const scaleContext = scaleCanvas.getContext("2d");
+                for (let step = 0; step < 256; step += 1) {
+                  const [r, g, b] = palette[255 - step];
+                  scaleContext.fillStyle = `rgb(${r} ${g} ${b})`;
+                  scaleContext.fillRect(0, step, 1, 1);
+                }
+              }
+
+              function renderScaleTicks() {
+                if (grids.length === 0) {
+                  scaleTicks.innerHTML = "";
+                  return;
+                }
+                const steps = 6;
+                const labels = [];
+                for (let step = 0; step <= steps; step += 1) {
+                  const celsius =
+                    rangeMax - (step * (rangeMax - rangeMin)) / steps;
+                  const edge = step === 0 || step === steps;
+                  labels.push(
+                    `<span>${Math.round(toDisplay(celsius))}` +
+                    `${edge ? " " + unitSymbol() : ""}</span>`
+                  );
+                }
+                scaleTicks.innerHTML = labels.join("");
+              }
+
+              function summarize(grid) {
+                let min = Infinity;
+                let max = -Infinity;
+                let total = 0;
+                let count = 0;
+                for (const row of grid) {
+                  for (const value of row) {
+                    min = Math.min(min, value);
+                    max = Math.max(max, value);
+                    total += value;
+                    count += 1;
+                  }
+                }
+                return { min, max, avg: total / count };
+              }
+
+              function drawGrid(grid) {
+                const rows = grid.length;
+                const columns = grid[0].length;
+                canvas.width = columns;
+                canvas.height = rows;
+                const picture = context.createImageData(columns, rows);
+                const span = rangeMax - rangeMin || 1;
+                for (let row = 0; row < rows; row += 1) {
+                  for (let column = 0; column < columns; column += 1) {
+                    const ratio = (grid[row][column] - rangeMin) / span;
+                    const index = Math.max(
+                      0,
+                      Math.min(255, Math.round(ratio * 255))
+                    );
+                    const [r, g, b] = palette[index];
+                    const offset = (row * columns + column) * 4;
+                    picture.data[offset] = r;
+                    picture.data[offset + 1] = g;
+                    picture.data[offset + 2] = b;
+                    picture.data[offset + 3] = 255;
+                  }
+                }
+                context.putImageData(picture, 0, 0);
+              }
+
+              // Per-cell numbers are dense at 32 x 24, so they are rounded to
+              // whole degrees and only drawn when the operator asks for them.
+              let showCellValues = false;
+
+              function renderCellValues() {
+                if (!showCellValues || grids.length === 0) {
+                  valueOverlay.innerHTML = "";
+                  return;
+                }
+                const grid = grids[current];
+                const parts = [];
+                for (let row = 0; row < grid.length; row += 1) {
+                  for (let column = 0; column < grid[row].length; column += 1) {
+                    const value = Math.round(toDisplay(grid[row][column]));
+                    parts.push(
+                      `<text x="${column + 0.5}" y="${row + 0.68}"` +
+                      ` text-anchor="middle">${value}</text>`
+                    );
+                  }
+                }
+                valueOverlay.innerHTML = parts.join("");
+              }
+
+              valuesButton.addEventListener("click", () => {
+                showCellValues = !showCellValues;
+                valuesButton.classList.toggle("is-active", showCellValues);
+                renderCellValues();
+              });
+
+              function showFrame(index) {
+                if (grids.length === 0 && imageUrls.length === 0) {
+                  return;
+                }
+                const total = grids.length || imageUrls.length;
+                current = Math.max(0, Math.min(total - 1, index));
+                slider.value = String(current);
+                frameIndexValue.textContent = `${current + 1} / ${total}`;
+                frameTimeValue.textContent = timeframes[current]
+                  ? new Date(timeframes[current]).toLocaleTimeString()
+                  : "--";
+                if (grids.length > 0) {
+                  drawGrid(grids[current]);
+                  const summary = summarize(grids[current]);
+                  frameMinValue.textContent = formatTemperature(summary.min);
+                  frameMaxValue.textContent = formatTemperature(summary.max);
+                  frameAvgValue.textContent = formatTemperature(summary.avg);
+                } else {
+                  frameImage.src = imageUrls[current];
+                  frameMinValue.textContent = "--";
+                  frameMaxValue.textContent = "--";
+                  frameAvgValue.textContent = "--";
+                }
+                renderCellValues();
+                updateCursorReadout();
+              }
+
+              function updateCursorReadout() {
+                if (cursorCell === null || grids.length === 0) {
+                  pixelReadout.hidden = true;
+                  cursorValue.textContent = "--";
+                  return;
+                }
+                const grid = grids[current];
+                const rows = grid.length;
+                const columns = grid[0].length;
+                const column = Math.min(
+                  columns - 1,
+                  Math.floor(cursorCell.fx * columns)
+                );
+                const row = Math.min(rows - 1, Math.floor(cursorCell.fy * rows));
+                const celsius = grid[row][column];
+                cursorValue.textContent = formatTemperature(celsius);
+                pixelReadout.hidden = false;
+                pixelReadout.style.left = `${cursorCell.x}px`;
+                pixelReadout.style.top = `${cursorCell.y}px`;
+                pixelReadout.textContent =
+                  `${formatTemperature(celsius)} ${unitSymbol()}` +
+                  `  (x ${column}, y ${row})`;
+              }
+
+              canvasWrap.addEventListener("mousemove", (event) => {
+                const bounds = canvasWrap.getBoundingClientRect();
+                const x = event.clientX - bounds.left;
+                const y = event.clientY - bounds.top;
+                cursorCell = {
+                  x,
+                  y,
+                  fx: Math.min(0.999999, Math.max(0, x / bounds.width)),
+                  fy: Math.min(0.999999, Math.max(0, y / bounds.height)),
+                };
+                updateCursorReadout();
+              });
+              canvasWrap.addEventListener("mouseleave", () => {
+                cursorCell = null;
+                updateCursorReadout();
+              });
+
+              function applyUnit() {
+                window.localStorage.setItem(
+                  "ir-camera-unit",
+                  showFahrenheit ? "F" : "C"
+                );
+                celsiusButton.classList.toggle("is-active", !showFahrenheit);
+                fahrenheitButton.classList.toggle("is-active", showFahrenheit);
+                unitLabels.forEach((label) => {
+                  label.textContent = unitSymbol();
+                });
+                renderScaleTicks();
+                if (grids.length > 0 || imageUrls.length > 0) {
+                  showFrame(current);
+                }
+              }
+
+              celsiusButton.addEventListener("click", () => {
+                if (showFahrenheit) {
+                  showFahrenheit = false;
+                  applyUnit();
+                }
+              });
+              fahrenheitButton.addEventListener("click", () => {
+                if (!showFahrenheit) {
+                  showFahrenheit = true;
+                  applyUnit();
+                }
+              });
+
+              function stop() {
+                if (timer !== null) {
+                  window.clearInterval(timer);
+                  timer = null;
+                }
+                playButton.textContent = "Play";
+              }
+
+              function frameInterval() {
+                const speed = Number(speedSelect.value) || 1;
+                if (timeframes.length < 2) {
+                  return 500 / speed;
+                }
+                const first = Date.parse(timeframes[0]);
+                const last = Date.parse(timeframes[timeframes.length - 1]);
+                if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) {
+                  return 500 / speed;
+                }
+                return (last - first) / (timeframes.length - 1) / speed;
+              }
+
+              function play() {
+                stop();
+                playButton.textContent = "Pause";
+                timer = window.setInterval(() => {
+                  const total = grids.length || imageUrls.length;
+                  if (current + 1 >= total) {
+                    showFrame(0);
+                    return;
+                  }
+                  showFrame(current + 1);
+                }, Math.max(40, frameInterval()));
+              }
+
+              playButton.addEventListener("click", () => {
+                if (timer === null) {
+                  play();
+                } else {
+                  stop();
+                }
+              });
+              previousButton.addEventListener("click", () => {
+                stop();
+                showFrame(current - 1);
+              });
+              nextButton.addEventListener("click", () => {
+                stop();
+                showFrame(current + 1);
+              });
+              slider.addEventListener("input", () => {
+                stop();
+                showFrame(Number(slider.value));
+              });
+              speedSelect.addEventListener("change", () => {
+                if (timer !== null) {
+                  play();
+                }
+              });
+
+              // Minimal ZIP reader. Recordings are written with stored entries,
+              // and deflated entries fall back to the browser's own inflater.
+              async function readZipEntries(buffer) {
+                const view = new DataView(buffer);
+                const bytes = new Uint8Array(buffer);
+                let directoryStart = -1;
+                for (let offset = buffer.byteLength - 22; offset >= 0; offset -= 1) {
+                  if (view.getUint32(offset, true) === 0x06054b50) {
+                    directoryStart = view.getUint32(offset + 16, true);
+                    break;
+                  }
+                }
+                if (directoryStart < 0) {
+                  throw new Error("This file is not a ZIP archive.");
+                }
+                const entries = new Map();
+                let cursor = directoryStart;
+                while (cursor < buffer.byteLength &&
+                       view.getUint32(cursor, true) === 0x02014b50) {
+                  const method = view.getUint16(cursor + 10, true);
+                  const compressedSize = view.getUint32(cursor + 20, true);
+                  const nameLength = view.getUint16(cursor + 28, true);
+                  const extraLength = view.getUint16(cursor + 30, true);
+                  const commentLength = view.getUint16(cursor + 32, true);
+                  const localOffset = view.getUint32(cursor + 42, true);
+                  const name = new TextDecoder().decode(
+                    bytes.subarray(cursor + 46, cursor + 46 + nameLength)
+                  );
+                  const localNameLength = view.getUint16(localOffset + 26, true);
+                  const localExtraLength = view.getUint16(localOffset + 28, true);
+                  const dataStart =
+                    localOffset + 30 + localNameLength + localExtraLength;
+                  let data = bytes.slice(dataStart, dataStart + compressedSize);
+                  if (method === 8) {
+                    const stream = new Blob([data])
+                      .stream()
+                      .pipeThrough(new DecompressionStream("deflate-raw"));
+                    data = new Uint8Array(await new Response(stream).arrayBuffer());
+                  } else if (method !== 0) {
+                    throw new Error(`Unsupported ZIP compression (${method}).`);
+                  }
+                  entries.set(name, data);
+                  cursor += 46 + nameLength + extraLength + commentLength;
+                }
+                return entries;
+              }
+
+              function resetRecording() {
+                stop();
+                imageUrls.forEach((url) => URL.revokeObjectURL(url));
+                grids = [];
+                imageUrls = [];
+                timeframes = [];
+                current = 0;
+                cursorCell = null;
+              }
+
+              function adoptRecording(payloadFrames, payloadTimeframes, jpegs) {
+                grids = payloadFrames || [];
+                timeframes = payloadTimeframes || [];
+                imageUrls = jpegs || [];
+                if (grids.length > 0) {
+                  // Auto-range over the whole recording so the replay stays
+                  // readable whatever range the live page was using.
+                  rangeMin = Infinity;
+                  rangeMax = -Infinity;
+                  grids.forEach((grid) => {
+                    const summary = summarize(grid);
+                    rangeMin = Math.min(rangeMin, summary.min);
+                    rangeMax = Math.max(rangeMax, summary.max);
+                  });
+                  if (rangeMax - rangeMin < 1) {
+                    rangeMax = rangeMin + 1;
+                  }
+                }
+                const total = grids.length || imageUrls.length;
+                const hasFrames = total > 0;
+                canvas.hidden = grids.length === 0;
+                frameImage.hidden = grids.length > 0;
+                slider.max = String(Math.max(0, total - 1));
+                slider.disabled = !hasFrames;
+                playButton.disabled = !hasFrames;
+                previousButton.disabled = !hasFrames;
+                nextButton.disabled = !hasFrames;
+                valuesButton.disabled = grids.length === 0;
+                renderScaleTicks();
+                if (hasFrames) {
+                  showFrame(0);
+                }
+                return total;
+              }
+
+              fileInput.addEventListener("change", async () => {
+                const file = fileInput.files && fileInput.files[0];
+                if (!file) {
+                  return;
+                }
+                loadState.classList.remove("is-error");
+                loadState.textContent = `Reading ${file.name} ...`;
+                try {
+                  if (palette === null) {
+                    await loadPalette();
+                  }
+                  resetRecording();
+                  let total = 0;
+                  if (file.name.toLowerCase().endsWith(".json")) {
+                    const payload = JSON.parse(await file.text());
+                    total = adoptRecording(payload.frames, payload.timeframes, []);
+                    loadState.textContent =
+                      `${file.name}: ${total} frames with temperatures.`;
+                  } else {
+                    const entries = await readZipEntries(await file.arrayBuffer());
+                    const metadata = entries.has("metadata.json")
+                      ? JSON.parse(new TextDecoder().decode(entries.get("metadata.json")))
+                      : {};
+                    const numbers = entries.has("frames.json")
+                      ? JSON.parse(new TextDecoder().decode(entries.get("frames.json")))
+                      : null;
+                    const jpegNames = Array.from(entries.keys())
+                      .filter((name) => name.toLowerCase().endsWith(".jpg"))
+                      .sort();
+                    const jpegs = jpegNames.map((name) =>
+                      URL.createObjectURL(
+                        new Blob([entries.get(name)], { type: "image/jpeg" })
+                      )
+                    );
+                    total = adoptRecording(
+                      numbers ? numbers.frames : null,
+                      (numbers && numbers.timeframes) || metadata.timeframes,
+                      jpegs
+                    );
+                    if (total === 0) {
+                      throw new Error("No frames found in this archive.");
+                    }
+                    loadState.textContent = numbers
+                      ? `${file.name}: ${total} frames with temperatures.`
+                      : `${file.name}: ${total} JPEG frames (no temperatures in` +
+                        ` this archive; record with Both or Numbers for readouts).`;
+                  }
+                } catch (readError) {
+                  resetRecording();
+                  adoptRecording([], [], []);
+                  loadState.classList.add("is-error");
+                  loadState.textContent = `Could not open ${file.name}: ${readError.message}`;
+                }
+              });
+
+              applyUnit();
             </script>
           </body>
         </html>
