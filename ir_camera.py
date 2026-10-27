@@ -22,8 +22,10 @@ from flask import Flask, Response, jsonify, request
 FRAME_WIDTH = 32
 FRAME_HEIGHT = 24
 DISPLAY_SCALE = 20
-MIN_TEMPERATURE_C = 15.0
-MAX_TEMPERATURE_C = 45.0
+# The MLX90640 measures object temperatures from -40 C to 300 C, so the color
+# map spans its full specified range.
+MIN_TEMPERATURE_C = -40.0
+MAX_TEMPERATURE_C = 300.0
 FRAME_READ_ATTEMPTS = 3
 FRAME_RETRY_DELAY_SECONDS = 0.1
 CAPTURE_FAILURE_DELAY_SECONDS = 0.5
@@ -262,6 +264,8 @@ class FrameBroadcaster:
             "max_viewers": self._max_viewers,
             "fps": None if fps is None else round(fps, 1),
             "average_celsius": average_celsius,
+            "scale_min_celsius": MIN_TEMPERATURE_C,
+            "scale_max_celsius": MAX_TEMPERATURE_C,
         }
         if error:
             status.update(
@@ -1246,8 +1250,10 @@ def create_app(camera: Camera | None = None) -> Flask:
               );
               const scaleTicks = document.getElementById("scale-ticks");
               const templateSelect = document.getElementById("template-select");
-              const MIN_SCALE_CELSIUS = 15;
-              const MAX_SCALE_CELSIUS = 45;
+              // The server owns the color map range; the page mirrors whatever
+              // /camera_status reports so the ticks always match the image.
+              let scaleMinCelsius = null;
+              let scaleMaxCelsius = null;
 
               // The sensor and every download stay in Celsius; the unit choice
               // only changes what this page displays.
@@ -1267,12 +1273,15 @@ def create_app(camera: Camera | None = None) -> Flask:
               }
 
               function renderScaleTicks() {
+                if (scaleMinCelsius === null || scaleMaxCelsius === null) {
+                  scaleTicks.innerHTML = "";
+                  return;
+                }
                 const steps = 6;
+                const span = scaleMaxCelsius - scaleMinCelsius;
                 const labels = [];
                 for (let step = 0; step <= steps; step += 1) {
-                  const celsius =
-                    MAX_SCALE_CELSIUS -
-                    (step * (MAX_SCALE_CELSIUS - MIN_SCALE_CELSIUS)) / steps;
+                  const celsius = scaleMaxCelsius - (step * span) / steps;
                   const value = Math.round(toDisplay(celsius));
                   const edge = step === 0 || step === steps;
                   labels.push(
@@ -1350,6 +1359,14 @@ def create_app(camera: Camera | None = None) -> Flask:
                     status.fps === null ? "--" : status.fps.toFixed(1);
                   averageCelsius = status.average_celsius;
                   renderAverage();
+                  if (
+                    status.scale_min_celsius !== scaleMinCelsius ||
+                    status.scale_max_celsius !== scaleMaxCelsius
+                  ) {
+                    scaleMinCelsius = status.scale_min_celsius;
+                    scaleMaxCelsius = status.scale_max_celsius;
+                    renderScaleTicks();
+                  }
                   // Viewer counts stay in the status payload for the server
                   // side viewer cap; the page no longer shows them.
                 } catch (requestError) {

@@ -15,6 +15,8 @@ import pytest
 from ir_camera import (
     FRAME_HEIGHT,
     FRAME_WIDTH,
+    MAX_TEMPERATURE_C,
+    MIN_TEMPERATURE_C,
     FrameBroadcaster,
     FrameSnapshot,
     Mlx90640Camera,
@@ -235,17 +237,20 @@ def test_rendered_frame_keeps_the_sensor_resolution():
 
 
 def test_rendered_frame_maps_temperature_to_the_inferno_ramp_unannotated():
-    temperatures = np.full((FRAME_HEIGHT, FRAME_WIDTH), 20.0, dtype=np.float32)
+    temperatures = np.full(
+        (FRAME_HEIGHT, FRAME_WIDTH), MIN_TEMPERATURE_C + 20.0, dtype=np.float32
+    )
     hot_y, hot_x = 12, 16
-    temperatures[hot_y, hot_x] = 45.0
+    temperatures[hot_y, hot_x] = MAX_TEMPERATURE_C
 
     image = render_thermal_frame(temperatures)
 
+    span = MAX_TEMPERATURE_C - MIN_TEMPERATURE_C
     hottest = cv2.applyColorMap(
         np.full((1, 1), 255, dtype=np.uint8), cv2.COLORMAP_INFERNO
     )
     cool = cv2.applyColorMap(
-        np.full((1, 1), round((20.0 - 15.0) / 30.0 * 255), dtype=np.uint8),
+        np.full((1, 1), int(20.0 / span * 255), dtype=np.uint8),
         cv2.COLORMAP_INFERNO,
     )
     assert np.array_equal(image[hot_y, hot_x], hottest[0, 0])
@@ -559,8 +564,9 @@ def test_home_page_shows_the_temperature_scale_served_as_a_png():
     # The tick labels are rendered by the page so they can follow the unit
     # toggle; the server only pins the range the scale image covers.
     assert b'id="scale-ticks"' in page.data
-    assert b"MIN_SCALE_CELSIUS = 15" in page.data
-    assert b"MAX_SCALE_CELSIUS = 45" in page.data
+    # The page mirrors the server's range instead of hardcoding one.
+    assert b"status.scale_min_celsius" in page.data
+    assert b"status.scale_max_celsius" in page.data
     assert scale.status_code == 200
     assert scale.mimetype == "image/png"
     assert scale.get_data().startswith(b"\x89PNG")
